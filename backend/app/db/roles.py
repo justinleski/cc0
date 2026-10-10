@@ -33,7 +33,7 @@ def ensure_login_sql(role: str, password: str) -> str:
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role_name}') THEN
             CREATE ROLE {role_name} WITH {_LOGIN_ATTRIBUTES} PASSWORD {password_literal};
         ELSE
-            ALTER ROLE {role_name} WITH {_LOGIN_ATTRIBUTES} PASSWORD {password_literal};
+            ALTER ROLE {role_name} WITH {_LOGIN_ATTRIBUTES};
         END IF;
     END
     $$;

@@ -22,7 +22,7 @@ fi
 
 if [ ! -d frontend/node_modules ]; then
     echo "Missing frontend/node_modules. Install first:" >&2
-    echo "  (cd frontend && npm install)" >&2
+    echo "  (cd frontend && npm ci)" >&2
     exit 1
 fi
 

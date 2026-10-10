@@ -1,4 +1,6 @@
+import importlib
 import os
+import sys
 from pathlib import Path
 from uuid import uuid4
 
@@ -13,6 +15,10 @@ from app.db import roles
 from app.db.roles import ROLE_API, ROLE_MIGRATOR, ROLE_NAMES, ROLE_WORKER, ensure_login_sql
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
+_REVISION_FILES = (
+    "0001_enable_vector_and_roles.py",
+    "0002_default_privileges.py",
+)
 
 
 def _config() -> Config:
@@ -34,6 +40,45 @@ def _downgrade(url: str) -> None:
     command.downgrade(_config(), "base")
 
 
+def _isolate_role_names(monkeypatch: pytest.MonkeyPatch, suffix: str) -> tuple[str, str, str]:
+    """Suffix cluster-wide roles without touching cc0_api, cc0_migrator, or cc0_worker.
+
+    Revision modules bind ROLE_* when they are imported. Alembic loads them by
+    file, and a second test in this process may already have imported them, so
+    rebind those globals after the roles module is patched. 0001 and 0002 also
+    read app.db.roles at call time for the copy Alembic executes itself.
+    """
+    # Import first when the process has not loaded the revisions yet, so the
+    # rebind below covers the already-imported case a later test would hit.
+    for module_name in (
+        "migrations.versions.0001_enable_vector_and_roles",
+        "migrations.versions.0002_default_privileges",
+    ):
+        if module_name not in sys.modules:
+            importlib.import_module(module_name)
+    renamed = {
+        name: f"{getattr(roles, name)}_{suffix}"
+        for name in ("ROLE_MIGRATOR", "ROLE_API", "ROLE_WORKER")
+    }
+    for name, isolated in renamed.items():
+        monkeypatch.setattr(roles, name, isolated)
+        monkeypatch.setitem(globals(), name, isolated)
+    isolated_roles = (renamed["ROLE_MIGRATOR"], renamed["ROLE_API"], renamed["ROLE_WORKER"])
+    monkeypatch.setattr(roles, "ROLE_NAMES", isolated_roles)
+    monkeypatch.setitem(globals(), "ROLE_NAMES", isolated_roles)
+    for module in list(sys.modules.values()):
+        path = getattr(module, "__file__", None) or ""
+        if not path.endswith(_REVISION_FILES):
+            continue
+        try:
+            importlib.reload(module)
+        except (ImportError, AttributeError, ModuleNotFoundError):
+            for name in ("ROLE_MIGRATOR", "ROLE_API", "ROLE_WORKER", "ROLE_NAMES"):
+                if hasattr(module, name):
+                    monkeypatch.setattr(module, name, getattr(roles, name))
+    return isolated_roles
+
+
 def _role_url(base: str, role: str, password: str, database: str) -> str:
     host = base.split("@", 1)[1]
     return f"postgresql://{role}:{password}@{host}/{database}"
@@ -49,13 +94,7 @@ def test_migration_enables_vector_and_creates_three_roles(
     temp_database = f"cc0_migration_test_{suffix}"
     temp_url = f"{base}/{temp_database}"
     # Roles are cluster-wide: isolate both upgrade and downgrade from the app logins.
-    for name in ("ROLE_API", "ROLE_MIGRATOR", "ROLE_WORKER"):
-        isolated_role = f"{getattr(roles, name)}_{suffix}"
-        monkeypatch.setattr(roles, name, isolated_role)
-        monkeypatch.setitem(globals(), name, isolated_role)
-    isolated_roles = (ROLE_MIGRATOR, ROLE_API, ROLE_WORKER)
-    monkeypatch.setattr(roles, "ROLE_NAMES", isolated_roles)
-    monkeypatch.setitem(globals(), "ROLE_NAMES", isolated_roles)
+    isolated_roles = _isolate_role_names(monkeypatch, suffix)
     monkeypatch.setenv("MIGRATION_DATABASE_URL", temp_url)
     passwords = {
         ROLE_MIGRATOR: settings.cc0_migrator_password,
@@ -70,7 +109,11 @@ def test_migration_enables_vector_and_creates_three_roles(
         _upgrade(temp_url)
         _assert_migrated(temp_url, passwords)
         with psycopg.connect(temp_url, autocommit=True) as connection:
-            connection.execute(ensure_login_sql(ROLE_API, passwords[ROLE_API]))
+            connection.execute(ensure_login_sql(ROLE_API, "must_not_replace_existing_password"))
+        with psycopg.connect(
+            _role_url(base, ROLE_API, passwords[ROLE_API], temp_database)
+        ) as connection:
+            assert connection.execute("SELECT 1").fetchone() == (1,)
         _downgrade(temp_url)
         with psycopg.connect(temp_url) as connection:
             extension = connection.execute(
@@ -90,9 +133,7 @@ def test_migration_enables_vector_and_creates_three_roles(
                 )
             )
             for role in isolated_roles:
-                connection.execute(
-                    sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role))
-                )
+                connection.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))
 
 
 def _assert_migrated(url: str, passwords: dict[str, str]) -> None:
@@ -139,3 +180,19 @@ def _assert_migrated(url: str, passwords: dict[str, str]) -> None:
     ) as connection:
         connection.execute("CREATE TABLE migrator_probe (id int)")
         connection.execute("DROP TABLE migrator_probe")
+
+    for creator_url in (url, _role_url(base, ROLE_MIGRATOR, passwords[ROLE_MIGRATOR], database)):
+        with psycopg.connect(creator_url) as connection:
+            connection.execute("CREATE TABLE grants_probe (id serial PRIMARY KEY, value int)")
+        try:
+            for role in (ROLE_API, ROLE_WORKER):
+                with psycopg.connect(
+                    _role_url(base, role, passwords[role], database)
+                ) as connection:
+                    connection.execute("INSERT INTO grants_probe (value) VALUES (1)")
+                    assert connection.execute("SELECT value FROM grants_probe").fetchone() == (1,)
+                    connection.execute("UPDATE grants_probe SET value = 2")
+                    connection.execute("DELETE FROM grants_probe")
+        finally:
+            with psycopg.connect(creator_url) as connection:
+                connection.execute("DROP TABLE grants_probe")

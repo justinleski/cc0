@@ -29,9 +29,12 @@ def ready(request: Request) -> JSONResponse:
     settings: Settings = request.app.state.settings
     checks = run_checks(
         {
-            "postgres": lambda: check_postgres(settings),
-            "object_store": lambda: check_object_store(settings),
-        }
+            "postgres": lambda: check_postgres(request.app.state.db_engine),
+            "object_store": lambda: check_object_store(
+                request.app.state.s3_client, settings.object_store_bucket
+            ),
+        },
+        request_id=request.state.request_id,
     )
     status: Literal["ok", "unavailable"] = (
         "ok" if all(value == "ok" for value in checks.values()) else "unavailable"

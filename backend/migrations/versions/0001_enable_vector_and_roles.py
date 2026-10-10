@@ -11,11 +11,8 @@ import sqlalchemy as sa
 from alembic import op
 
 from app.core.config import Settings
+from app.db import roles
 from app.db.roles import (
-    ROLE_API,
-    ROLE_MIGRATOR,
-    ROLE_NAMES,
-    ROLE_WORKER,
     ensure_login_sql,
     grant_connect_sql,
     quote_identifier,
@@ -30,10 +27,12 @@ depends_on: str | Sequence[str] | None = None
 
 def _passwords() -> dict[str, str]:
     settings = Settings()
+    # Look up role names at call time. The test suffixes them after import, and
+    # a from-import would keep the names bound when the module was first loaded.
     return {
-        ROLE_MIGRATOR: settings.cc0_migrator_password,
-        ROLE_API: settings.cc0_api_password,
-        ROLE_WORKER: settings.cc0_worker_password,
+        roles.ROLE_MIGRATOR: settings.cc0_migrator_password,
+        roles.ROLE_API: settings.cc0_api_password,
+        roles.ROLE_WORKER: settings.cc0_worker_password,
     }
 
 
@@ -49,15 +48,15 @@ def upgrade() -> None:
         # Plain strings: a password can contain ':' which SQLAlchemy text() treats as a bind.
         op.execute(ensure_login_sql(role, password))
         op.execute(grant_connect_sql(database, role))
-    op.execute(f"GRANT USAGE, CREATE ON SCHEMA public TO {ROLE_MIGRATOR}")
-    op.execute(f"GRANT USAGE ON SCHEMA public TO {ROLE_API}, {ROLE_WORKER}")
+    op.execute(f"GRANT USAGE, CREATE ON SCHEMA public TO {roles.ROLE_MIGRATOR}")
+    op.execute(f"GRANT USAGE ON SCHEMA public TO {roles.ROLE_API}, {roles.ROLE_WORKER}")
 
 
 def downgrade() -> None:
     database = _database_name()
-    op.execute(f"REVOKE ALL ON SCHEMA public FROM {ROLE_MIGRATOR}")
-    op.execute(f"REVOKE ALL ON SCHEMA public FROM {ROLE_API}, {ROLE_WORKER}")
-    for role in ROLE_NAMES:
+    op.execute(f"REVOKE ALL ON SCHEMA public FROM {roles.ROLE_MIGRATOR}")
+    op.execute(f"REVOKE ALL ON SCHEMA public FROM {roles.ROLE_API}, {roles.ROLE_WORKER}")
+    for role in roles.ROLE_NAMES:
         op.execute(revoke_connect_sql(database, role))
         op.execute(f"DROP ROLE IF EXISTS {role}")
     op.execute("DROP EXTENSION IF EXISTS vector")

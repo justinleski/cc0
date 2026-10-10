@@ -40,15 +40,14 @@ def test_running_stack_supports_vector_and_head_bucket(running_stack: Settings) 
 
 
 def test_health_and_ready_respond_against_the_running_stack(running_stack: Settings) -> None:
-    client = TestClient(create_app(running_stack))
+    with TestClient(create_app(running_stack)) as client:
+        health = client.get("/api/v1/health")
+        assert health.status_code == 200
+        assert health.json() == {"status": "ok"}
 
-    health = client.get("/api/v1/health")
-    assert health.status_code == 200
-    assert health.json() == {"status": "ok"}
-
-    ready = client.get("/api/v1/ready")
-    assert ready.status_code == 200
-    assert ready.json() == {
-        "status": "ok",
-        "checks": {"postgres": "ok", "object_store": "ok"},
-    }
+        ready = client.get("/api/v1/ready")
+        assert ready.status_code == 200
+        assert ready.json() == {
+            "status": "ok",
+            "checks": {"postgres": "ok", "object_store": "ok"},
+        }

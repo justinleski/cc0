@@ -15,11 +15,12 @@ def test_quote_literal_escapes_quotes() -> None:
     assert quote_literal("o'brien") == "'o''brien'"
 
 
-def test_ensure_login_sql_creates_or_updates_the_named_role() -> None:
+def test_ensure_login_sql_preserves_existing_password() -> None:
     statement = ensure_login_sql(ROLE_API, "o'brien")
 
     assert "CREATE ROLE cc0_api" in statement
     assert "ALTER ROLE cc0_api" in statement
+    assert "PASSWORD" not in statement.split("ELSE", 1)[1]
     assert "PASSWORD 'o''brien'" in statement
     assert "NOSUPERUSER" in statement
     assert "NOCREATEROLE" in statement

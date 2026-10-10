@@ -4,6 +4,12 @@ on:
   push:
   pull_request:
 
+concurrency:
+  # head_ref is set for pull_request, so a PR and pushes to that branch share a
+  # group. Other branches use github.ref and are not cancelled by this run.
+  group: check-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -13,6 +19,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
 
       - uses: actions/setup-node@v4
         with:
