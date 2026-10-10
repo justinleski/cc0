@@ -13,16 +13,24 @@ Compose allowlist: `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`,
 `POSTGRES_PORT`, `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY`, `RUSTFS_API_PORT`,
 `RUSTFS_CONSOLE_PORT`, `S3_BUCKET`, and `API_PORT`.
 
+The database settings the API reads are `DATABASE_URL`, `MIGRATION_DATABASE_URL`,
+`WORKER_DATABASE_URL`, `CC0_MIGRATOR_PASSWORD`, `CC0_API_PASSWORD`, and
+`CC0_WORKER_PASSWORD`. Each URL already contains its login password. There is
+no `DATABASE_PASSWORD` setting. That name is a common shell export and is
+ignored, in `.env` and in the process environment, so it does not configure a
+login and does not block startup. `POSTGRES_PASSWORD` is the Compose superuser
+password, also not read by the API.
+
 Process environment variables are checked separately, because production is
 configured by the environment and `extra="ignore"` would otherwise keep a
 localhost default when a name is misspelled. A variable is rejected when its
-name, compared case-insensitively, is not a Settings field and not on that
-allowlist, and it starts with one of: `APP_`, `DATABASE`, `MIGRATION_`,
-`WORKER_`, `CC0_`, `OBJECT_STORE_`, `READINESS_`, `POSTGRES_`, `RUSTFS_`,
-`S3_`, `API_`. `DATABASE` has no trailing underscore, so `DATABASE_URLL` is
-rejected and `DATABASE_URL` is kept. Unrelated names (`PATH`, `HOME`,
-`GITHUB_*`, npm variables) do not use those prefixes and stay allowed. Only
-names that are actually set are considered.
+name, compared case-insensitively, is not a Settings field, not on the Compose
+allowlist, and not the ignored `DATABASE_PASSWORD`, and it starts with one of:
+`APP_`, `DATABASE`, `MIGRATION_`, `WORKER_`, `CC0_`, `OBJECT_STORE_`,
+`READINESS_`, `POSTGRES_`, `RUSTFS_`, `S3_`, `API_`. `DATABASE` has no trailing
+underscore, so `DATABASE_URLL` is rejected and `DATABASE_URL` is kept.
+Unrelated names (`PATH`, `HOME`, `GITHUB_*`, npm variables) do not use those
+prefixes and stay allowed. Only names that are actually set are considered.
 
 If a host port changes, update the corresponding database URLs or object store
 endpoint too. Keep `S3_BUCKET` and `OBJECT_STORE_BUCKET` consistent. The shared
@@ -58,8 +66,9 @@ creates roles and extensions. `cc0_migrator` has schema `USAGE, CREATE`;
 sets creator-specific defaults for both the Alembic user and `cc0_migrator`:
 future tables grant SELECT/INSERT/UPDATE/DELETE to API and worker, and sequences
 grant USAGE/SELECT. That table grant is intentionally broad for M0: both roles
-can modify rows in future tables. Existing tables are unaffected. M1 may tighten
-these grants. See [ADR-0003](decisions/0003-database-roles.md) and
+can modify rows in future tables. Existing tables are unaffected. The
+[M2 handoff](m2-handoff.md) is the required per-table replacement and is not
+applied yet. See [ADR-0003](decisions/0003-database-roles.md) and
 [storage](systems/storage.md).
 
 Re-executing 0001 while a role already exists preserves that role's password and

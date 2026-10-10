@@ -17,6 +17,8 @@ ADRs are revised in place as decisions evolve.
   Startup, shared environment, and database concepts.
 - [Evaluation](evaluation.md) — not implemented; spec pointers.
 - [AWS deployment](aws-deployment.md) — not implemented; pilot spec pointers.
+- [M2 engineering handoff](m2-handoff.md) — required for the next schema and
+  request work; not implemented, except the `DATABASE_PASSWORD` startup rule.
 - [Lint and tests](lint-test.md)
   The individual commands behind `./scripts/check.sh`.
 

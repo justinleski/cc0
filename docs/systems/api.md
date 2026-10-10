@@ -61,9 +61,11 @@ flowchart TB
 - Settings come from the process environment or repository-root `.env`.
   Unknown `.env` keys fail except the Compose allowlist. A process-environment
   name is rejected when, case-insensitively, it is not a Settings field and not
-  on that allowlist, and it starts with `APP_`, `DATABASE`, `MIGRATION_`,
-  `WORKER_`, `CC0_`, `OBJECT_STORE_`, `READINESS_`, `POSTGRES_`, `RUSTFS_`,
-  `S3_`, or `API_`. `PATH`, `HOME`, and `GITHUB_*` stay allowed. `APP_ENV`
+  on that allowlist, and not the ignored ambient name `DATABASE_PASSWORD`, and
+  it starts with `APP_`, `DATABASE`, `MIGRATION_`, `WORKER_`, `CC0_`,
+  `OBJECT_STORE_`, `READINESS_`, `POSTGRES_`, `RUSTFS_`, `S3_`, or `API_`.
+  `PATH`, `HOME`, and `GITHUB_*` stay allowed. Database logins are the three
+  URLs plus `CC0_*_PASSWORD`; `DATABASE_PASSWORD` is not read. `APP_ENV`
   other than `local` (case-insensitive, whitespace stripped) rejects dummy
   secrets by exact match, database URLs with an empty or missing password, and
   an object-store host of `localhost` or `127.0.0.1`. See
@@ -76,8 +78,9 @@ flowchart TB
   never `get_settings()`. Tests inject `create_app(Settings(...))`.
 - Lifespan creates one lazy SQLAlchemy engine (pool size 2, no overflow) and one
   S3 client, then disposes and closes them at shutdown. This engine is for
-  readiness probes. It must not be reused for request work until its pool and
-  the probe statement timeout are split. `statement_timeout` is `SET LOCAL`
+  readiness probes. The [M2 handoff](../m2-handoff.md) requires one application
+  pool shared by endpoints and readiness, and a separate pool in the worker
+  process. That split is not built yet. `statement_timeout` is `SET LOCAL`
   inside the probe transaction, not an engine-wide connection option.
 - `READINESS_TIMEOUT_SECONDS` defaults to 2 seconds per dependency: database
   pool wait, connect, the probe statement, and S3 connect/read. It is not one

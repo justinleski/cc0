@@ -99,8 +99,9 @@ flowchart LR
 Default privileges cover objects created by the Alembic user and
 `cc0_migrator`: API and worker receive table SELECT/INSERT/UPDATE/DELETE and
 sequence USAGE/SELECT. That DML grant is intentionally broad for M0; both roles
-can modify rows in future tables, and M1 may tighten it. Existing objects are
-unaffected. Downgrade of 0002 revokes those defaults only, not grants already
+can modify rows in future tables. The [M2 handoff](../m2-handoff.md) requires
+those defaults to be revoked when the catalog tables are created. Existing
+objects are unaffected. Downgrade of 0002 revokes those defaults only, not grants already
 applied to tables that exist.
 Shared RustFS keys are a development shortcut; production needs separate API,
 worker, and bucket-init identities as described in [ADR-0001](../decisions/0001-object-storage.md).

@@ -44,7 +44,9 @@ the object creator: defaults cover both the Alembic superuser and
 `cc0_migrator`. They do not change existing objects, and downgrade revokes the
 defaults without revoking grants already applied to existing tables. The table
 privileges are intentionally broad for M0: API and worker can both modify rows.
-M1 may narrow writes by role.
+The [M2 handoff](../m2-handoff.md) is the required replacement: revoke those
+defaults in the migration that creates the catalog, then grant per table.
+That replacement is not in the schema yet.
 
 Re-executing 0001 while a role already exists preserves the password and still
 reapplies role attributes. The password is not updated, so readiness can fail

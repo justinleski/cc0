@@ -40,12 +40,21 @@ def test_process_environment_rejects_settings_typo(monkeypatch):
 def test_process_environment_allows_compose_allowlist_and_path(monkeypatch):
     monkeypatch.setenv("POSTGRES_USER", "cc0")
     monkeypatch.setenv("POSTGRES_PASSWORD", "local-only")
+    monkeypatch.setenv("DATABASE_PASSWORD", "ambient-not-read")
     monkeypatch.setenv("API_PORT", "8000")
     monkeypatch.setenv("S3_BUCKET", "cc0")
     monkeypatch.setenv("PATH", "/tmp/custom-path")
     monkeypatch.setenv("HOME", "/tmp/custom-home")
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
-    assert Settings(_env_file=None).app_env == "local"
+    settings = Settings(_env_file=None)
+    assert settings.app_env == "local"
+    assert "ambient-not-read" not in settings.database_url
+
+
+def test_database_url_typo_is_still_rejected(monkeypatch):
+    monkeypatch.setenv("DATABASE_URLL", "postgresql://api:secret@127.0.0.1/cc0")
+    with pytest.raises(ValueError, match="DATABASE_URLL"):
+        Settings(_env_file=None)
 
 
 def test_nonlocal_defaults_are_rejected():

@@ -1,0 +1,100 @@
+# M2 engineering handoff
+
+Status: Required for upcoming schema and request work. Not implemented, except
+the environment rule in [Configuration](#2-environment-configuration).
+
+M0 still uses a readiness-only database pool and broad default table grants.
+Do not treat this page as a description of the running system. The catalog
+tables below come from the [MVP spec](mvp-spec.md) and do not exist yet.
+
+## 1. Database connection pooling
+
+Replace the readiness-only engine in
+[backend/app/integrations/readiness.py](../backend/app/integrations/readiness.py)
+when the first request path needs Postgres. Today that engine is pool size 2,
+no overflow, and its checkout timeout is the readiness budget. Endpoints and
+`GET /api/v1/ready` must share one engine on `app.state` for the API process.
+Dispose it in the existing lifespan shutdown.
+
+Background workers run in a separate process ([ADR-0004](decisions/0004-host-processes.md)).
+A pool cannot cross that boundary. The worker creates its own engine from
+`WORKER_DATABASE_URL` and disposes it when that process exits. It must not
+import or borrow the API engine.
+
+Suggested local budget, per process:
+
+| Process | `pool_size` | `max_overflow` | Worst case |
+|---|---|---|---|
+| API (requests and readiness) | 5 | 5 | 10 |
+| Worker | 2 | 2 | 4 |
+
+Also set `pool_pre_ping`, a recycle of 30 minutes, a checkout `pool_timeout`
+of 10 seconds, and a psycopg `connect_timeout` of 5 seconds. Keep the readiness
+probe's `statement_timeout` as `SET LOCAL` inside that transaction. Do not copy
+the readiness budget onto the shared pool, and do not set `statement_timeout`
+as an engine connect option: a later request would inherit it.
+
+PostgreSQL 16 defaults to `max_connections = 100`, with 3 reserved for
+superusers, so about 97 connections are usable. Count every process:
+
+`api_instances * 10 + worker_instances * 4 + short Alembic sessions + admin headroom`
+
+One API and one worker use 14. Stay under about 70 application connections
+before raising `max_connections`, so migrations and an operator session still
+fit. Each extra API instance adds 10, not 1.
+
+## 2. Environment configuration
+
+Implemented. Startup used to fail when the shell exported `DATABASE_PASSWORD`.
+
+The API reads these database variables, and no others:
+
+- `DATABASE_URL` — API login, used by the shared pool and by readiness
+- `MIGRATION_DATABASE_URL` — Alembic
+- `WORKER_DATABASE_URL` — worker process pool
+- `CC0_MIGRATOR_PASSWORD`, `CC0_API_PASSWORD`, `CC0_WORKER_PASSWORD` — role
+  creation in migration 0001
+
+Each URL already carries its password. `DATABASE_PASSWORD` is not one of those
+fields. The unknown-name check treats any `DATABASE…` name as application
+configuration, so an exported `DATABASE_PASSWORD` was rejected even though
+nothing reads it. That exact name is now ignored in `.env` and in the process
+environment. A misspelling such as `DATABASE_URLL` is still rejected.
+`POSTGRES_PASSWORD` remains the Compose superuser password.
+
+## 3. PostgreSQL permissions
+
+Revision 0002 grants `SELECT, INSERT, UPDATE, DELETE` on future tables to both
+`cc0_api` and `cc0_worker`. That was an M0 stand-in. The migration that creates
+the catalog must revoke those default privileges for both roles before it
+creates tables, then grant the table privileges below. Leaving 0002 in place
+would copy the broad grant onto every new table.
+
+Alembic keeps using `cc0_migrator` for schema changes. `cc0_api` and
+`cc0_worker` stay `NOSUPERUSER NOCREATEDB NOCREATEROLE` with schema `USAGE`
+only. Neither role gets `CREATE` on a schema. The first migration still
+connects as the superuser because `CREATE ROLE` and `CREATE EXTENSION` require
+it. Later revisions should run as `cc0_migrator`.
+
+Apply grants in the migration that creates each table, then assert them from
+the integration test that already logs in as each role. `cc0_api` and
+`cc0_worker` must still fail `CREATE TABLE`.
+
+| Table | `cc0_api` | `cc0_worker` |
+|---|---|---|
+| `creators`, `assets`, `asset_embeddings`, `asset_relations` | `SELECT` | `SELECT`, `INSERT`, `UPDATE` |
+| `providers`, `source_records`, `rights_evidence`, `jobs` | none | `SELECT`, `INSERT`, `UPDATE` |
+| `users` | `SELECT`, `INSERT` | none |
+| `boards`, `board_items` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | none |
+| `exports` | `SELECT`, `INSERT`, `UPDATE` | `SELECT`, `UPDATE` on `state` and `object_key` only |
+
+Deletion is narrow. The API deletes boards and board items because those are
+user-owned. The worker deletes only rows it created for a failed or superseded
+ingestion attempt (`jobs`, and an asset row that never reached `READY`). It
+does not delete boards, users, rights evidence, or source records. Rights
+evidence stays append-only. Sequences get `USAGE, SELECT` only for roles that
+insert into the table.
+
+`exports` is shared on purpose: the API enqueues a row, and the worker fills
+in status and the object key. The worker grant should name those columns when
+the table is created, not `UPDATE` on the whole row.

@@ -27,14 +27,21 @@ COMPOSE_ALLOWLIST = frozenset(
     }
 )
 
+# Not a Settings field. Passwords for the three application logins live in
+# DATABASE_URL, MIGRATION_DATABASE_URL, WORKER_DATABASE_URL, and the CC0_*_PASSWORD
+# fields. An exported DATABASE_PASSWORD is a common ambient name (it is not
+# POSTGRES_PASSWORD and the API does not read it). Ignoring this exact name keeps
+# that export from failing startup. A typo such as DATABASE_URLL is still rejected.
+IGNORED_AMBIENT_ENV = frozenset({"DATABASE_PASSWORD"})
+
 # Fail closed for names that look like application configuration. Compared
 # case-insensitively: a variable is rejected when it is not a Settings field,
-# not on COMPOSE_ALLOWLIST, and it starts with one of these prefixes.
-# `DATABASE` has no trailing underscore so `DATABASE_URL` and `DATABASE_URLL`
-# both match. Unrelated names (PATH, HOME, GITHUB_*, npm) do not match and stay
-# allowed. This is what catches a process-environment typo such as
-# OBJECT_STORE_ENDPOIN, which extra="ignore" would otherwise drop, leaving the
-# localhost default in place. Only names actually present are considered.
+# not on COMPOSE_ALLOWLIST, not in IGNORED_AMBIENT_ENV, and it starts with one
+# of these prefixes. `DATABASE` has no trailing underscore so `DATABASE_URL`
+# and `DATABASE_URLL` both match. Unrelated names (PATH, HOME, GITHUB_*, npm)
+# do not match and stay allowed. This is what catches a process-environment typo
+# such as OBJECT_STORE_ENDPOIN, which extra="ignore" would otherwise drop,
+# leaving the localhost default in place. Only names actually present are considered.
 CONFIG_ENV_PREFIXES = (
     "APP_",
     "DATABASE",
@@ -64,7 +71,11 @@ _LOCAL_OBJECT_STORE_HOSTS = frozenset({"localhost", "127.0.0.1"})
 
 
 def _allowed_config_names() -> set[str]:
-    return {name.upper() for name in Settings.model_fields} | set(COMPOSE_ALLOWLIST)
+    return (
+        {name.upper() for name in Settings.model_fields}
+        | set(COMPOSE_ALLOWLIST)
+        | set(IGNORED_AMBIENT_ENV)
+    )
 
 
 def _is_project_config_name(name: str) -> bool:
