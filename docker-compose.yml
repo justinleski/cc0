@@ -22,41 +22,53 @@ services:
       retries: 12
     restart: unless-stopped
 
-  minio:
-    image: quay.io/minio/minio:RELEASE.2025-10-15T17-29-55Z
-    command: server /data --console-address ":9001"
+  rustfs:
+    image: rustfs/rustfs:1.0.1
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cc0minio}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-cc0minio_local_password}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-cc0rustfs}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-cc0rustfs_local_password}
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+      RUSTFS_CHECK_UPDATE: "false"
+      RUSTFS_OBS_LOGGER_LEVEL: error
     ports:
-      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
-      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${RUSTFS_API_PORT:-9000}:9000"
+      - "127.0.0.1:${RUSTFS_CONSOLE_PORT:-9001}:9001"
     volumes:
-      - minio_data:/data
+      - rustfs_data:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health/ready"]
       interval: 5s
       timeout: 5s
       retries: 12
+      start_period: 15s
     restart: unless-stopped
 
-  minio-init:
-    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+  rustfs-init:
+    image: amazon/aws-cli:2.37.12
     depends_on:
-      minio:
+      rustfs:
         condition: service_healthy
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cc0minio}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-cc0minio_local_password}
+      AWS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-cc0rustfs}
+      AWS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-cc0rustfs_local_password}
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
       S3_BUCKET: ${S3_BUCKET:-cc0}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         set -eu
-        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
-        mc mb --ignore-existing "local/$$S3_BUCKET"
+        mkdir -p /root/.aws
+        printf '%s\n' '[default]' 's3 =' '    addressing_style = path' > /root/.aws/config
+        if aws s3api head-bucket --bucket "$$S3_BUCKET" --endpoint-url http://rustfs:9000; then
+          exit 0
+        fi
+        aws s3api create-bucket --bucket "$$S3_BUCKET" --endpoint-url http://rustfs:9000
     restart: on-failure
 
 volumes:
   pgdata:
-  minio_data:
+  rustfs_data:
