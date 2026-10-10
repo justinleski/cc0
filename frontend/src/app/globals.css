@@ -1,0 +1,183 @@
+@import "tailwindcss";
+@import "../../../design/tokens/tokens.css";
+
+@theme inline {
+  --color-paper: var(--cc0-paper);
+  --color-paper-raised: var(--cc0-paper-raised);
+  --color-ink: var(--cc0-ink);
+  --color-muted: var(--cc0-muted);
+  --color-line: var(--cc0-line);
+  --color-accent: var(--cc0-accent);
+  --color-on-image: var(--cc0-on-image);
+  --font-sans: var(--font-plex), "IBM Plex Sans", sans-serif;
+  --radius-control: var(--cc0-radius-control);
+}
+
+html {
+  background: var(--cc0-paper);
+  color: var(--cc0-ink);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font-plex), "IBM Plex Sans", sans-serif;
+  font-size: var(--font-size-body);
+  line-height: var(--line-body);
+}
+
+a {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--cc0-accent);
+  outline-offset: 2px;
+}
+
+.work-tile {
+  position: relative;
+  height: 100%;
+}
+
+.work-tile__link {
+  position: relative;
+  display: block;
+  height: 100%;
+  overflow: hidden;
+  color: var(--cc0-on-image);
+  text-decoration: none;
+}
+
+.work-tile__link:focus-visible {
+  outline: 2px solid var(--cc0-accent);
+  outline-offset: 2px;
+}
+
+.work-tile__image,
+.work-tile__blur {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.work-tile__blur-clip,
+.work-tile__scrim,
+.work-tile__title {
+  opacity: 0;
+}
+
+.work-tile__blur-clip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 50%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.work-tile__blur {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 200%;
+  max-width: none;
+  filter: blur(var(--blur-tile));
+  transform: scale(1.08);
+}
+
+.work-tile__scrim {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 50%;
+  background: color-mix(in srgb, var(--cc0-ink) 46%, transparent);
+  pointer-events: none;
+}
+
+.work-tile__title {
+  position: absolute;
+  right: var(--space-3);
+  bottom: var(--space-3);
+  left: var(--space-3);
+  margin: 0;
+  font-size: var(--font-size-body);
+  line-height: var(--line-title);
+}
+
+@media (hover: hover) {
+  .work-tile:hover .work-tile__blur-clip,
+  .work-tile:hover .work-tile__scrim,
+  .work-tile:hover .work-tile__title,
+  .work-tile:focus-within .work-tile__blur-clip,
+  .work-tile:focus-within .work-tile__scrim,
+  .work-tile:focus-within .work-tile__title {
+    opacity: 1;
+  }
+}
+
+.work-tile:focus-within .work-tile__blur-clip,
+.work-tile:focus-within .work-tile__scrim,
+.work-tile:focus-within .work-tile__title {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .work-tile__blur-clip,
+  .work-tile__scrim,
+  .work-tile__title,
+  .work-tile__moves {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .work-tile__blur-clip,
+  .work-tile__scrim,
+  .work-tile__title,
+  .work-tile__moves {
+    transition: opacity 160ms ease;
+  }
+}
+
+.work-tile__moves {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  display: flex;
+  gap: var(--space-1);
+  opacity: 0;
+}
+
+.work-tile:hover .work-tile__moves,
+.work-tile:focus-within .work-tile__moves {
+  opacity: 1;
+}
+
+.work-tile__moves button {
+  border: 0;
+  border-radius: var(--cc0-radius-control);
+  background: var(--cc0-paper-raised);
+  color: var(--cc0-ink);
+  font: inherit;
+  font-size: var(--font-size-meta);
+  line-height: 1;
+  padding: var(--space-2);
+  cursor: pointer;
+}
+
+.path-row {
+  display: flex;
+  gap: var(--space-3);
+  overflow-x: auto;
+  padding-bottom: var(--space-2);
+}
+
+.path-row .work-tile {
+  height: 220px;
+  flex: 0 0 auto;
+}

@@ -1,0 +1,46 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname, useSearchParams } from "next/navigation";
+
+export function SiteHeader() {
+  const pathname = usePathname();
+  const params = useSearchParams();
+  const query = params.get("q") ?? "";
+  const browseCurrent = pathname === "/";
+  const boardsCurrent = pathname.startsWith("/boards");
+
+  return (
+    <header className="border-b border-line bg-paper">
+      <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-4 px-4 py-4 md:gap-6 md:px-10">
+        <Link href="/" className="text-xl leading-tight tracking-tight">
+          CC0
+        </Link>
+        <nav className="flex gap-4" aria-label="Primary">
+          <Link href="/" className={browseCurrent ? "text-accent" : undefined} aria-current={browseCurrent ? "page" : undefined}>
+            Browse
+          </Link>
+          <Link
+            href="/boards"
+            className={boardsCurrent ? "text-accent" : undefined}
+            aria-current={boardsCurrent ? "page" : undefined}
+          >
+            Boards
+          </Link>
+        </nav>
+        <form className="ml-auto min-w-[12rem] flex-1 md:max-w-sm" action="/" method="get" role="search">
+          <label className="sr-only" htmlFor="q">
+            Search works
+          </label>
+          <input
+            id="q"
+            name="q"
+            defaultValue={query}
+            placeholder="Search works"
+            className="w-full rounded-control border border-line bg-paper-raised px-3 py-2 text-ink placeholder:text-muted"
+          />
+        </form>
+      </div>
+    </header>
+  );
+}

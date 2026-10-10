@@ -1,0 +1,33 @@
+/*
+  Minimal tokens for the CC0 browse UI.
+  One accent. Grayscale structure. Spacing is a 4px scale.
+*/
+
+:root {
+  --cc0-paper: #f3f0ea;
+  --cc0-paper-raised: #faf8f4;
+  --cc0-ink: #1c1b19;
+  --cc0-muted: #6f6a64;
+  --cc0-line: #e3ddd4;
+  --cc0-accent: #1e3a34;
+  --cc0-on-image: #faf8f4;
+
+  --font-size-meta: 12px;
+  --font-size-body: 14px;
+  --font-size-section: 20px;
+  --font-size-title: 32px;
+  --line-body: 1.45;
+  --line-title: 1.25;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-10: 40px;
+  --space-16: 64px;
+  --space-24: 96px;
+
+  --cc0-radius-control: 2px;
+  --blur-tile: 8px;
+}
