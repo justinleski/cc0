@@ -1,6 +1,6 @@
 # cc0
 
-Local-first CC0 visual boards. This checkout has the folder scaffold, local data services, and a FastAPI process with health and readiness checks. Catalog, search, boards, and the frontend are later slices.
+Local-first CC0 visual boards. This checkout has the folder scaffold, local data services, a FastAPI process with health and readiness checks, and a frontend that browses a mock catalog. Catalog, search, and real boards are later slices.
 
 ## Layout
 
@@ -8,8 +8,9 @@ Local-first CC0 visual boards. This checkout has the folder scaffold, local data
 .
 ├── docker-compose.yml          # Postgres + pgvector and RustFS
 ├── docker/postgres/init/       # one-time extension setup on a new volume
-├── docs/                       # spec and architecture, next
-├── frontend/                   # Next.js client, next
+├── docs/                       # spec, lint and test commands
+├── scripts/check.sh            # lint, tests, migration, integration tests
+├── frontend/                   # Next.js client, mock catalog until the API serves one
 ├── backend/
 │   ├── app/
 │   │   ├── api/                # FastAPI routes
@@ -18,7 +19,7 @@ Local-first CC0 visual boards. This checkout has the folder scaffold, local data
 │   │   ├── domain/             # catalog, rights, boards, search
 │   │   ├── integrations/       # source APIs, object storage, embeddings
 │   │   └── workers/            # ingestion, thumbnails, exports
-│   ├── migrations/             # Alembic, next
+│   ├── migrations/             # Alembic revisions
 │   ├── scripts/
 │   └── tests/
 │       ├── unit/
@@ -41,12 +42,7 @@ Postgres is on `127.0.0.1:5432` unless `POSTGRES_PORT` overrides it. RustFS's S3
 
 Local object storage is RustFS (`rustfs/rustfs:1.0.1`), an S3-compatible server aimed at development. AWS S3 is the later production store. The application should use path-style S3 requests against RustFS. MinIO is not part of this stack; its community edition was discontinued.
 
-The first Postgres start enables the `vector` extension. Catalog tables come with Alembic later. Until then, the API connects as a local `cc0_api` login rather than the Postgres superuser. Create that login once on the running database:
-
-```bash
-docker compose exec -T postgres psql -U cc0 -d cc0 \
-  < backend/scripts/create_local_api_role.sql
-```
+The first Postgres start enables the `vector` extension. The Alembic migration enables it again if that step was skipped, and creates three logins: `cc0_migrator`, `cc0_api`, and `cc0_worker`. There are no catalog tables yet. The migration runs as the database superuser, because creating roles and extensions requires it. `cc0_migrator` can create objects in `public`. `cc0_api` and `cc0_worker` can connect and use the schema, and cannot create tables. The API readiness check uses `cc0_api`.
 
 ## API
 
@@ -62,6 +58,7 @@ From the repository root, with the data services already up:
 ```bash
 python3 -m venv backend/.venv
 backend/.venv/bin/pip install -e "backend[dev]"
+backend/.venv/bin/alembic -c backend/alembic.ini upgrade head
 backend/.venv/bin/uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
@@ -70,8 +67,15 @@ In another shell:
 ```bash
 curl -sS http://127.0.0.1:8000/api/v1/health
 curl -sS http://127.0.0.1:8000/api/v1/ready
-backend/.venv/bin/pytest backend/tests
 ```
+
+## Checks
+
+```bash
+./scripts/check.sh
+```
+
+That runs backend lint, unit tests, the frontend type check and lint, then starts the data services, migrates, and runs the integration tests. The integration tests fail rather than skip when Postgres or RustFS is down, so a green run means the stack answered. `docs/lint-test.md` lists the same commands individually. `backend/.venv/bin/pytest backend/tests/unit` is the fast loop that needs nothing running.
 
 Stop the services without deleting data:
 

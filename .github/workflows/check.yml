@@ -1,0 +1,40 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/pip install --upgrade pip
+          backend/.venv/bin/pip install -e "backend[dev]"
+
+      - name: Install frontend
+        run: npm ci
+        working-directory: frontend
+
+      # The runner already has Docker, so the integration tests inside the
+      # script get real Postgres and RustFS instead of skipping.
+      - name: Check
+        run: ./scripts/check.sh
+
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail 50

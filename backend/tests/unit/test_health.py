@@ -7,7 +7,7 @@ from app.main import create_app
 
 def _settings() -> Settings:
     return Settings(
-        database_url="postgresql://cc0_api:secret-db-password@127.0.0.1:5433/cc0",
+        database_url="postgresql://cc0_api:secret-db-password@127.0.0.1:5432/cc0",
         object_store_secret_key="secret-object-key",
     )
 

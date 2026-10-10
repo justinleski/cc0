@@ -4,10 +4,12 @@ version = "0.1.0"
 description = "CC0 visual boards API"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic==1.16.5",
     "boto3==1.40.61",
     "fastapi==0.119.0",
     "psycopg[binary]==3.2.10",
     "pydantic-settings==2.11.0",
+    "sqlalchemy==2.0.44",
     "uvicorn==0.37.0",
 ]
 
@@ -26,7 +28,9 @@ build-backend = "setuptools.build_meta"
 include = ["app*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# Default run needs no Docker. Integration tests are an explicit path and fail
+# when the stack is down: `pytest tests/integration`.
+testpaths = ["tests/unit"]
 pythonpath = ["."]
 
 [tool.ruff]

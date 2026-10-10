@@ -17,9 +17,18 @@ class Settings(BaseSettings):
     )
 
     app_env: str = "local"
-    database_url: str = Field(
-        default="postgresql://cc0_api:cc0_api_local_password@127.0.0.1:5433/cc0",
+    migration_database_url: str = Field(
+        default="postgresql://cc0:cc0_local_password@127.0.0.1:5432/cc0",
     )
+    database_url: str = Field(
+        default="postgresql://cc0_api:cc0_api_local_password@127.0.0.1:5432/cc0",
+    )
+    worker_database_url: str = Field(
+        default="postgresql://cc0_worker:cc0_worker_local_password@127.0.0.1:5432/cc0",
+    )
+    cc0_migrator_password: str = "cc0_migrator_local_password"
+    cc0_api_password: str = "cc0_api_local_password"
+    cc0_worker_password: str = "cc0_worker_local_password"
     object_store_endpoint: str = "http://127.0.0.1:9000"
     object_store_bucket: str = "cc0"
     object_store_access_key: str = "cc0rustfs"
