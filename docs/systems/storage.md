@@ -10,8 +10,8 @@ Related: [api.md](api.md), [ADR-0001](../decisions/0001-object-storage.md), [ADR
 Two long-running local services hold state: PostgreSQL with the `vector`
 extension for relational data and future embeddings, and RustFS as an
 S3-compatible object store for future image bytes. A one-shot `rustfs-init`
-container creates the `cc0` bucket. One Alembic revision enables `vector` and
-creates the three login roles; there are no catalog tables yet, so nothing is
+container creates the `cc0` bucket. Alembic revision 0001 enables `vector` and
+creates the three login roles; 0002 grants default table and sequence privileges; there are no catalog tables yet, so nothing is
 stored beyond `alembic_version`.
 
 ## Architecture
@@ -72,12 +72,20 @@ flowchart LR
   with the Compose command to run, so a stopped container does not look like bad
   credentials, a missing extension, or a missing bucket. It deliberately prints
   host and port only, since the database URL also carries a password.
-- The migration has a working `downgrade`: it revokes schema privileges, revokes
-  `CONNECT`, drops the three roles, and drops the extension. The test asserts a
+- Downgrade is two revisions. 0002 revokes the default privileges it granted
+  and does not revoke grants already applied to existing tables. 0001 then
+  revokes schema privileges, revokes `CONNECT`, drops the three roles, and
+  drops the extension. `alembic downgrade base` runs both. The test asserts a
   clean `upgrade` then `downgrade` round trip.
-- A role that already exists is updated rather than failing. `ensure_login_sql`
-  emits `CREATE ROLE` or `ALTER ROLE` depending on `pg_roles`, which makes
-  re-running the migration on a cluster with leftover roles safe.
+- A role that already exists is not created again. `ensure_login_sql` emits
+  `CREATE ROLE` or attribute-only `ALTER ROLE` depending on `pg_roles`.
+  Re-executing 0001 preserves the password and still rewrites role attributes
+  (`LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT`). Because the password
+  is not updated, readiness can fail until the operator aligns it with `.env`.
+  `alembic downgrade base` drops the roles, so a later upgrade creates them
+  again and sets the password from the environment. Changing `.env` alone does
+  not rotate an existing cluster. Local rotation is a new volume, a manual
+  `ALTER ROLE`, or downgrade to base plus upgrade.
 
 ## Design decisions
 
@@ -85,3 +93,15 @@ flowchart LR
 - One database serves relational data and vectors: [ADR-0002](../decisions/0002-postgres-pgvector.md).
 - Each component gets its own login before any catalog tables exist: [ADR-0003](../decisions/0003-database-roles.md).
 - Compose runs data services only; application processes run on the host: [ADR-0004](../decisions/0004-host-processes.md).
+
+## Future objects and local identities
+
+Default privileges cover objects created by the Alembic user and
+`cc0_migrator`: API and worker receive table SELECT/INSERT/UPDATE/DELETE and
+sequence USAGE/SELECT. That DML grant is intentionally broad for M0; both roles
+can modify rows in future tables, and M1 may tighten it. Existing objects are
+unaffected. Downgrade of 0002 revokes those defaults only, not grants already
+applied to tables that exist.
+Shared RustFS keys are a development shortcut; production needs separate API,
+worker, and bucket-init identities as described in [ADR-0001](../decisions/0001-object-storage.md).
+See [local development](../local-development.md) for roles, grants, and rotation.

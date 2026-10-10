@@ -4,11 +4,19 @@ What is written down about this repository, and where. Milestone M0 is the only
 milestone that has shipped, so the system pages below describe local
 infrastructure and a health-check API, not a catalog.
 
+M0 acceptance gate is met: Compose services, migrations, `/api/v1/health` and
+`/api/v1/ready`, and integration checks against pgvector and the RustFS bucket.
+ADRs are revised in place as decisions evolve.
+
 ## Spec and commands
 
 - [MVP spec](mvp-spec.md)
   Product scope, data model, milestones M0 through M5. Source of truth for work
   not yet built.
+- [Local development](local-development.md)
+  Startup, shared environment, and database concepts.
+- [Evaluation](evaluation.md) — not implemented; spec pointers.
+- [AWS deployment](aws-deployment.md) — not implemented; pilot spec pointers.
 - [Lint and tests](lint-test.md)
   The individual commands behind `./scripts/check.sh`.
 

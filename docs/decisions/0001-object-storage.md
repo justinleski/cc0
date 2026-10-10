@@ -31,3 +31,16 @@ edition was discontinued.
   objects yet, so this is unbuilt as of M0.
 - RustFS behavior is not identical to S3. Differences in error codes or
   consistency surface only against real S3.
+
+## Identities and lifecycle
+
+Shared `RUSTFS_ACCESS_KEY` credentials are a local development shortcut and must
+not ship to production. Production identities separate API reads, worker
+uploads/reads (delete only where required), and bucket creation/configuration by
+an init identity. Production identity wiring is not implemented in M0.
+
+Readiness remains `HeadBucket`; a worker upload/delete of a temporary object is
+an M1 diagnostic, not a readiness probe. Prefix layout is deferred to M1.
+Versioning stays off unless a recovery need appears. Takedown deletes the object
+(and every version if versioning is later enabled) and retains a negative cache
+to prevent re-ingestion. These ingestion behaviors are future work.

@@ -35,3 +35,23 @@ superuser. The API readiness check connects as `cc0_api`.
   interpolation, because a password can contain a character SQLAlchemy would
   read as a bind parameter. That requires explicit identifier and password
   validation in `backend/app/db/roles.py`.
+
+## Default grants and password ownership
+
+Revision 0002 grants SELECT/INSERT/UPDATE/DELETE on future tables and USAGE/SELECT
+on future sequences to API and worker. PostgreSQL default privileges belong to
+the object creator: defaults cover both the Alembic superuser and
+`cc0_migrator`. They do not change existing objects, and downgrade revokes the
+defaults without revoking grants already applied to existing tables. The table
+privileges are intentionally broad for M0: API and worker can both modify rows.
+M1 may narrow writes by role.
+
+Re-executing 0001 while a role already exists preserves the password and still
+reapplies role attributes. The password is not updated, so readiness can fail
+until the operator aligns it. `alembic downgrade base` drops the roles, and a
+later upgrade creates them again with the password from the environment.
+Changing `.env` alone does not rotate an existing cluster. Local rotation is a
+new volume, a manual `ALTER ROLE`, or downgrade to base plus upgrade.
+Production rotation belongs to operations. See the
+[local development database primer](../local-development.md#database-primer)
+for cluster-wide roles, grants, and volume lifetime.
