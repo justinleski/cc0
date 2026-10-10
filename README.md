@@ -1,6 +1,6 @@
 # cc0
 
-Local-first CC0 visual boards. This checkout is the folder scaffold and the local data services. The API, worker, and frontend are not in this slice.
+Local-first CC0 visual boards. This checkout has the folder scaffold, local data services, and a FastAPI process with health and readiness checks. Catalog, search, boards, and the frontend are later slices.
 
 ## Layout
 
@@ -41,7 +41,37 @@ Postgres is on `127.0.0.1:5432` unless `POSTGRES_PORT` overrides it. RustFS's S3
 
 Local object storage is RustFS (`rustfs/rustfs:1.0.1`), an S3-compatible server aimed at development. AWS S3 is the later production store. The application should use path-style S3 requests against RustFS. MinIO is not part of this stack; its community edition was discontinued.
 
-The first Postgres start enables the `vector` extension. Tables and database roles come with Alembic later.
+The first Postgres start enables the `vector` extension. Catalog tables come with Alembic later. Until then, the API connects as a local `cc0_api` login rather than the Postgres superuser. Create that login once on the running database:
+
+```bash
+docker compose exec -T postgres psql -U cc0 -d cc0 \
+  < backend/scripts/create_local_api_role.sql
+```
+
+## API
+
+The process exposes two routes:
+
+- `GET /api/v1/health` returns `200` when the process is up. It does not contact Postgres or RustFS.
+- `GET /api/v1/ready` returns `200` only when Postgres accepts `SELECT 1` as `cc0_api` and RustFS accepts a path-style `HeadBucket` for the `cc0` bucket. Either failure returns `503` with `postgres` and `object_store` marked `ok` or `error`. The body does not include credentials or driver error text.
+
+Each response includes `X-Request-ID`. The API logs that id with the method, path, and status. It does not log query strings, tokens, or signed URLs.
+
+From the repository root, with the data services already up:
+
+```bash
+python3 -m venv backend/.venv
+backend/.venv/bin/pip install -e "backend[dev]"
+backend/.venv/bin/uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
+```
+
+In another shell:
+
+```bash
+curl -sS http://127.0.0.1:8000/api/v1/health
+curl -sS http://127.0.0.1:8000/api/v1/ready
+backend/.venv/bin/pytest backend/tests
+```
 
 Stop the services without deleting data:
 

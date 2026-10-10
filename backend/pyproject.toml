@@ -1,0 +1,37 @@
+[project]
+name = "cc0"
+version = "0.1.0"
+description = "CC0 visual boards API"
+requires-python = ">=3.12"
+dependencies = [
+    "boto3==1.40.61",
+    "fastapi==0.119.0",
+    "psycopg[binary]==3.2.10",
+    "pydantic-settings==2.11.0",
+    "uvicorn==0.37.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx==0.28.1",
+    "pytest==8.4.2",
+    "ruff==0.14.0",
+]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
