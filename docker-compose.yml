@@ -1,0 +1,62 @@
+name: cc0
+
+# Local data services only. The API, worker, and frontend are not containers yet.
+# Ports bind to 127.0.0.1. Stop with `docker compose stop` so named volumes stay.
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cc0}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cc0_local_password}
+      POSTGRES_DB: ${POSTGRES_DB:-cc0}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-10-15T17-29-55Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cc0minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-cc0minio_local_password}
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cc0minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-cc0minio_local_password}
+      S3_BUCKET: ${S3_BUCKET:-cc0}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "local/$$S3_BUCKET"
+    restart: on-failure
+
+volumes:
+  pgdata:
+  minio_data:
