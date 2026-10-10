@@ -1,0 +1,28 @@
+---
+description: >
+  Create or update engineering documentation when implementing
+  features, fixing bugs, changing architecture, APIs, or
+  infrastructure. Include Mermaid diagrams for complex
+  multi-component systems when useful.
+alwaysApply: false
+---
+
+# Documentation
+
+- Treat `docs/` as the source of truth for architectural
+  decisions, system behavior, and developer workflows.
+  Keep documentation consistent with the code.
+- Create or update docs when implementing a subsystem,
+  changing architecture, modifying API contracts,
+  adding infrastructure, or changing non-obvious behavior.
+- Skip documentation for trivial edits and obvious utilities.
+- Prefer concise Markdown, examples, and source-file links.
+  Explain why a design exists, not merely what code does.
+- Add Mermaid diagrams when useful for systems with 3+
+  interacting components, asynchronous workflows,
+  concurrency, or complex failure handling.
+- Use flowcharts for relationships and sequence diagrams
+  for runtime interactions, including important failure paths.
+- Maintain `docs/README.md` as a short navigable index.
+- Update affected documentation in the same code change.
+- Never present planned functionality as implemented.

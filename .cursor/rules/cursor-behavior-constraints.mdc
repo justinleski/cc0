@@ -1,6 +1,7 @@
 ---
 description: Constraints on how Cursor should behave when designing and implementing UX, UI, IA, and accessibility patterns.
-alwaysApply: true
+alwaysApply: false
+globs: frontend/**
 category: core
 tags: [ux, ui, ia, accessibility, behavior]
 ---
