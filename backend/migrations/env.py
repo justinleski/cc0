@@ -12,7 +12,10 @@ from app.core.config import Settings  # noqa: E402
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Keep application loggers alive. fileConfig disables existing loggers by
+    # default, which silences cc0.api and cc0.worker whenever a migration runs
+    # in a process that has already configured logging.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 config.set_main_option("script_location", str(BACKEND_ROOT / "migrations"))
 
