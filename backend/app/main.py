@@ -6,7 +6,8 @@ from fastapi import FastAPI
 from app.api.health import router as health_router
 from app.core.config import Settings, get_settings
 from app.core.logging import RequestContextMiddleware, configure_logging
-from app.integrations.readiness import create_db_engine, create_s3_client
+from app.db.engine import create_api_engine
+from app.integrations.object_store import create_s3_client
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -14,7 +15,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        engine = create_db_engine(app.state.settings)
+        engine = create_api_engine(app.state.settings)
         try:
             client = create_s3_client(app.state.settings)
             try:

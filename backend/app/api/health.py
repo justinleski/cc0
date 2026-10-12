@@ -29,7 +29,9 @@ def ready(request: Request) -> JSONResponse:
     settings: Settings = request.app.state.settings
     checks = run_checks(
         {
-            "postgres": lambda: check_postgres(request.app.state.db_engine),
+            "postgres": lambda: check_postgres(
+                request.app.state.db_engine, settings.readiness_timeout_seconds
+            ),
             "object_store": lambda: check_object_store(
                 request.app.state.s3_client, settings.object_store_bucket
             ),
