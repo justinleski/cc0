@@ -1,8 +1,10 @@
 # Local development
 
-M0 runs data services in Compose and API/frontend processes on the host. See the
-[root quick start](../README.md) for installation and startup commands and
-[lint and tests](lint-test.md) for `./scripts/check.sh` and individual checks.
+Data services run in Compose; the API, the ingestion worker, and the frontend
+run on the host. See the [root quick start](../README.md) for installation and
+startup commands, [lint and tests](lint-test.md) for `./scripts/check.sh` and
+individual checks, and [ingestion](systems/ingestion.md) for the worker
+commands and its `INGEST_*` settings.
 
 ## Configuration
 
@@ -27,7 +29,7 @@ localhost default when a name is misspelled. A variable is rejected when its
 name, compared case-insensitively, is not a Settings field, not on the Compose
 allowlist, and not the ignored `DATABASE_PASSWORD`, and it starts with one of:
 `APP_`, `DATABASE`, `MIGRATION_`, `WORKER_`, `CC0_`, `OBJECT_STORE_`,
-`READINESS_`, `POSTGRES_`, `RUSTFS_`, `S3_`, `API_`. `DATABASE` has no trailing
+`READINESS_`, `INGEST_`, `POSTGRES_`, `RUSTFS_`, `S3_`, `API_`. `DATABASE` has no trailing
 underscore, so `DATABASE_URLL` is rejected and `DATABASE_URL` is kept.
 Unrelated names (`PATH`, `HOME`, `GITHUB_*`, npm variables) do not use those
 prefixes and stay allowed. Only names that are actually set are considered.
@@ -63,13 +65,10 @@ other databases too.
 Alembic uses the `cc0` superuser through `MIGRATION_DATABASE_URL` because it
 creates roles and extensions. `cc0_migrator` has schema `USAGE, CREATE`;
 `cc0_api` and `cc0_worker` have `USAGE` and cannot create tables. Revision 0002
-sets creator-specific defaults for both the Alembic user and `cc0_migrator`:
-future tables grant SELECT/INSERT/UPDATE/DELETE to API and worker, and sequences
-grant USAGE/SELECT. That table grant is intentionally broad for M0: both roles
-can modify rows in future tables. Existing tables are unaffected. The
-[M2 handoff](m2-handoff.md) is the required per-table replacement and is not
-applied yet. See [ADR-0003](decisions/0003-database-roles.md) and
-[storage](systems/storage.md).
+set broad M0 defaults for future tables; revision 0003 revokes them and grants
+per table instead. The worker can read and write the six catalog tables but not
+delete from them, and the API can read only `creators` and `assets`. See
+[ADR-0003](decisions/0003-database-roles.md) and [storage](systems/storage.md).
 
 Re-executing 0001 while a role already exists preserves that role's password and
 still reapplies its attributes (`LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE

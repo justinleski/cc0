@@ -39,8 +39,9 @@ not ship to production. Production identities separate API reads, worker
 uploads/reads (delete only where required), and bucket creation/configuration by
 an init identity. Production identity wiring is not implemented in M0.
 
-Readiness remains `HeadBucket`; a worker upload/delete of a temporary object is
-an M1 diagnostic, not a readiness probe. Prefix layout is deferred to M1.
-Versioning stays off unless a recovery need appears. Takedown deletes the object
-(and every version if versioning is later enabled) and retains a negative cache
-to prevent re-ingestion. These ingestion behaviors are future work.
+Readiness remains `HeadBucket`. M1 fixed the prefix layout as content-addressed
+keys, `originals/ab/cd/<sha256>.<ext>` and `thumbnails/ab/cd/<sha256>.webp`;
+see [ingestion](../systems/ingestion.md). The M1 worker writes and heads objects
+and never deletes one. Versioning stays off unless a recovery need appears.
+Takedown deletes the object (and every version if versioning is later enabled)
+and retains a negative cache to prevent re-ingestion; takedown is future work.

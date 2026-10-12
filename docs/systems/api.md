@@ -63,7 +63,7 @@ flowchart TB
   name is rejected when, case-insensitively, it is not a Settings field and not
   on that allowlist, and not the ignored ambient name `DATABASE_PASSWORD`, and
   it starts with `APP_`, `DATABASE`, `MIGRATION_`, `WORKER_`, `CC0_`,
-  `OBJECT_STORE_`, `READINESS_`, `POSTGRES_`, `RUSTFS_`, `S3_`, or `API_`.
+  `OBJECT_STORE_`, `READINESS_`, `INGEST_`, `POSTGRES_`, `RUSTFS_`, `S3_`, or `API_`.
   `PATH`, `HOME`, and `GITHUB_*` stay allowed. Database logins are the three
   URLs plus `CC0_*_PASSWORD`; `DATABASE_PASSWORD` is not read. `APP_ENV`
   other than `local` (case-insensitive, whitespace stripped) rejects dummy
@@ -76,19 +76,21 @@ flowchart TB
   so collection does not read the repository `.env`.
 - Process entry points load settings once; requests use `app.state.settings`,
   never `get_settings()`. Tests inject `create_app(Settings(...))`.
-- Lifespan creates one lazy SQLAlchemy engine (pool size 2, no overflow) and one
-  S3 client, then disposes and closes them at shutdown. This engine is for
-  readiness probes. The [M2 handoff](../m2-handoff.md) requires one application
-  pool shared by endpoints and readiness, and a separate pool in the worker
-  process. That split is not built yet. `statement_timeout` is `SET LOCAL`
-  inside the probe transaction, not an engine-wide connection option.
-- `READINESS_TIMEOUT_SECONDS` defaults to 2 seconds per dependency: database
-  pool wait, connect, the probe statement, and S3 connect/read. It is not one
-  deadline for the whole route. Checks run sequentially, so two hung
-  dependencies take about two budgets. `connect_timeout` is psycopg's
-  whole-second knob and is at least 1 second; a sub-second budget rounds up.
-  `pool_timeout` stays on the readiness budget and may be fractional. S3 uses
-  the fractional budget directly.
+- Lifespan creates the API pool from
+  [app/db/engine.py](../../backend/app/db/engine.py) and one S3 client, then
+  disposes and closes them at shutdown. Endpoints and readiness share that one
+  engine on `app.state`: pool size 5, overflow 5, `pool_pre_ping`, 30 minute
+  recycle, 10 second checkout timeout, 5 second psycopg `connect_timeout`. The
+  ingestion worker builds its own 2 + 2 pool in its own process and never
+  imports this one ([ingestion](ingestion.md)).
+- `statement_timeout` is `SET LOCAL` inside the probe transaction, not an
+  engine-wide connection option, so a later request on the same connection
+  does not inherit the readiness budget.
+- `READINESS_TIMEOUT_SECONDS` defaults to 2 seconds and bounds the probe
+  statement and S3 connect/read. Connect and pool checkout use the shared
+  pool's own limits, so an unreachable Postgres takes up to the 5 second
+  `connect_timeout` to report. Checks run sequentially, so two hung
+  dependencies add up.
 
 ## Failure handling
 

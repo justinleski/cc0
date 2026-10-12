@@ -1,20 +1,20 @@
 # M2 engineering handoff
 
-Status: Required for upcoming schema and request work. Not implemented, except
-the environment rule in [Configuration](#2-environment-configuration).
+Status: Partly implemented. Pooling, the environment rule, and the grants for
+the six M1 catalog tables shipped with M1. Grants for `asset_embeddings`,
+`asset_relations`, `users`, `boards`, `board_items`, and `exports` are still
+required when those tables are created.
 
-M0 still uses a readiness-only database pool and broad default table grants.
-Do not treat this page as a description of the running system. The catalog
-tables below come from the [MVP spec](mvp-spec.md) and do not exist yet.
+The rows in the grant table below that name M2+ tables describe tables that do
+not exist yet. For what is running, see [storage](systems/storage.md) and
+[ingestion](systems/ingestion.md).
 
 ## 1. Database connection pooling
 
-Replace the readiness-only engine in
-[backend/app/integrations/readiness.py](../backend/app/integrations/readiness.py)
-when the first request path needs Postgres. Today that engine is pool size 2,
-no overflow, and its checkout timeout is the readiness budget. Endpoints and
-`GET /api/v1/ready` must share one engine on `app.state` for the API process.
-Dispose it in the existing lifespan shutdown.
+Implemented in M1 in [backend/app/db/engine.py](../backend/app/db/engine.py).
+Endpoints and `GET /api/v1/ready` share one engine on `app.state` for the API
+process, disposed in the lifespan shutdown. The rules below still apply to any
+new process or pool.
 
 Background workers run in a separate process ([ADR-0004](decisions/0004-host-processes.md)).
 A pool cannot cross that boundary. The worker creates its own engine from
@@ -64,11 +64,11 @@ environment. A misspelling such as `DATABASE_URLL` is still rejected.
 
 ## 3. PostgreSQL permissions
 
-Revision 0002 grants `SELECT, INSERT, UPDATE, DELETE` on future tables to both
-`cc0_api` and `cc0_worker`. That was an M0 stand-in. The migration that creates
-the catalog must revoke those default privileges for both roles before it
-creates tables, then grant the table privileges below. Leaving 0002 in place
-would copy the broad grant onto every new table.
+Revision 0002 granted `SELECT, INSERT, UPDATE, DELETE` on future tables to both
+`cc0_api` and `cc0_worker` as an M0 stand-in. Revision 0003 revoked those
+defaults before creating the catalog and granted the M1 rows of the table
+below. At head a new table grants nothing to either role until its own
+migration does.
 
 Alembic keeps using `cc0_migrator` for schema changes. `cc0_api` and
 `cc0_worker` stay `NOSUPERUSER NOCREATEDB NOCREATEROLE` with schema `USAGE`
@@ -89,9 +89,11 @@ the integration test that already logs in as each role. `cc0_api` and
 | `exports` | `SELECT`, `INSERT`, `UPDATE` | `SELECT`, `UPDATE` on `state` and `object_key` only |
 
 Deletion is narrow. The API deletes boards and board items because those are
-user-owned. The worker deletes only rows it created for a failed or superseded
-ingestion attempt (`jobs`, and an asset row that never reached `READY`). It
-does not delete boards, users, rights evidence, or source records. Rights
+user-owned. M1 gave the worker no `DELETE` at all: dead jobs stay as the dead
+letter, and an asset row is only inserted once it is `STORED`, so there is no
+half-built asset to clean up. Add a worker `DELETE` only when a later kind needs
+one, and only on the rows that kind creates. The worker never deletes boards,
+users, rights evidence, or source records. Rights
 evidence stays append-only. Sequences get `USAGE, SELECT` only for roles that
 insert into the table.
 

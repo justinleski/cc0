@@ -1,12 +1,16 @@
 # CC0 Knowledge Index
 
-What is written down about this repository, and where. Milestone M0 is the only
-milestone that has shipped, so the system pages below describe local
-infrastructure and a health-check API, not a catalog.
+What is written down about this repository, and where. Milestones M0 and M1
+have shipped: local infrastructure, a health-check API, and an ingestion worker
+that stores explicitly CC0 Met fixtures with rights evidence. Nothing in the
+catalog is served to users yet.
 
-M0 acceptance gate is met: Compose services, migrations, `/api/v1/health` and
+M0 acceptance: Compose services, migrations, `/api/v1/health` and
 `/api/v1/ready`, and integration checks against pgvector and the RustFS bucket.
-ADRs are revised in place as decisions evolve.
+M1 acceptance: ten CC0 fixtures ingest repeatably, non-CC0 and unknown records
+stay metadata-only, the negative cache prevents refetching, repeats create no
+second asset, and failed jobs resume. ADRs are revised in place as decisions
+evolve.
 
 ## Spec and commands
 
@@ -17,17 +21,20 @@ ADRs are revised in place as decisions evolve.
   Startup, shared environment, and database concepts.
 - [Evaluation](evaluation.md) — not implemented; spec pointers.
 - [AWS deployment](aws-deployment.md) — not implemented; pilot spec pointers.
-- [M2 engineering handoff](m2-handoff.md) — required for the next schema and
-  request work; not implemented, except the `DATABASE_PASSWORD` startup rule.
+- [M2 engineering handoff](m2-handoff.md) — pooling and the M1 catalog grants
+  are implemented; the grant matrix for M2+ tables is still required.
 - [Lint and tests](lint-test.md)
   The individual commands behind `./scripts/check.sh`.
 
 ## Systems
 
 - [Storage](systems/storage.md)
-  Postgres with pgvector, RustFS, the first migration, database roles.
+  Postgres with pgvector, RustFS, migrations, database roles and catalog grants.
 - [API process](systems/api.md)
-  FastAPI health and readiness endpoints, configuration, request logging.
+  FastAPI health and readiness endpoints, configuration, request logging, pools.
+- [Ingestion](systems/ingestion.md)
+  Met adapter, rights gate, fetch gate, the job row as dead letter, resume
+  rules, and operator commands.
 
 ## Decisions
 
@@ -38,7 +45,7 @@ ADRs are revised in place as decisions evolve.
 
 ## Not documented yet
 
-Ingestion, search, boards, and exports are milestones M1 through M4 in the
+Embeddings and search, boards, and exports are milestones M2 through M4 in the
 [spec](mvp-spec.md). Each gets a page under `systems/` when its code exists. The
 frontend browses a mock catalog in the meantime; see
 [frontend/README.md](../frontend/README.md).
