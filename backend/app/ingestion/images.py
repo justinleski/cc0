@@ -57,6 +57,11 @@ def process(
             width, height = probe.size
     except UnidentifiedImageError as exc:
         raise PermanentFailure("undecodable_image", type(exc).__name__) from exc
+    except Image.DecompressionBombError as exc:
+        # Pillow's own ceiling, reached on a header that claims far more pixels
+        # than our limit. It is not an OSError, so without this the exception
+        # would leave the pipeline and take the rest of the batch with it.
+        raise PermanentFailure("image_too_many_pixels", type(exc).__name__) from exc
     except OSError as exc:
         raise PermanentFailure("truncated_image", type(exc).__name__) from exc
 
@@ -82,6 +87,8 @@ def process(
             )
             buffer = BytesIO()
             thumbnail.save(buffer, format="WEBP", quality=82, method=4)
+    except Image.DecompressionBombError as exc:
+        raise PermanentFailure("image_too_many_pixels", type(exc).__name__) from exc
     except OSError as exc:
         raise PermanentFailure("thumbnail_failed", type(exc).__name__) from exc
 

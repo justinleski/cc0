@@ -17,6 +17,11 @@ def configure_logging() -> None:
     logging.getLogger("botocore").setLevel(logging.WARNING)
     logging.getLogger("boto3").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
+    # HTTPX logs the whole request URL at INFO, query string included, which
+    # would put a signed or tokenized provider URL into the worker log. Our own
+    # lines carry identifiers and stable reasons instead.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):

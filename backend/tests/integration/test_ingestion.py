@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import psycopg
 import pytest
@@ -30,7 +31,7 @@ from app.ingestion.met import MetAdapter
 from app.integrations.object_store import ObjectStore, create_s3_client
 from app.worker import ingest as ingest_module
 from app.worker.ingest import IngestService
-from app.worker.jobs import JobStore, dedupe_key
+from app.worker.jobs import ClaimLost, JobStore, dedupe_key
 from app.worker.store import CatalogStore
 from tests.integration.conftest import BACKEND_ROOT, CatalogDatabase
 
@@ -67,11 +68,11 @@ class FlakyFetcher:
         self._failures = failures
         self.attempts = 0
 
-    def fetch(self, url: str) -> FetchedImage:
+    def fetch(self, url: str, *, guard: Any = None) -> FetchedImage:
         self.attempts += 1
         if self.attempts <= self._failures:
             raise TransientFailure("server_error", "503")
-        return self._inner.fetch(url)
+        return self._inner.fetch(url, guard=guard)
 
 
 class SameBytesFetcher:
@@ -81,8 +82,8 @@ class SameBytesFetcher:
         self._inner = inner
         self._shared_url = shared_url
 
-    def fetch(self, url: str) -> FetchedImage:
-        fetched = self._inner.fetch(self._shared_url)
+    def fetch(self, url: str, *, guard: Any = None) -> FetchedImage:
+        fetched = self._inner.fetch(self._shared_url, guard=guard)
         return FetchedImage(url=url, content_type=fetched.content_type, body=fetched.body)
 
 
@@ -227,6 +228,10 @@ def test_ten_cc0_fixtures_ingest_the_same_way_every_time(harness: Harness) -> No
     assert len(harness.source.image_requests) == 10
     assert len(set(harness.source.image_requests)) == 10
     assert harness.scalar("SELECT count(*) FROM rights_evidence") == 10
+    assert harness.scalar(
+        "SELECT count(*) FROM rights_evidence WHERE decision_reason = :reason",
+        reason="provider_policy_and_item_flag",
+    ) == 10
     assert harness.scalar(
         "SELECT count(*) FROM source_records WHERE eligibility_status = :status",
         status=catalog.ELIGIBILITY_ELIGIBLE_CC0,
@@ -581,6 +586,112 @@ def test_identical_bytes_under_two_records_keep_two_assets(harness: Harness) -> 
     assert len({row[1] for row in rows}) == 1
     assert len({row[2] for row in rows}) == 1
     assert harness.scalar("SELECT count(DISTINCT source_record_id) FROM rights_evidence") == 2
+
+
+def test_a_repeat_ingest_keeps_a_retry_budget(harness: Harness) -> None:
+    """Re-running ingest must not erase backoff or attempts already spent."""
+    service = harness.service_with(FlakyFetcher(harness.source, failures=1))
+    service.enqueue(["100008"])
+    first = service.drain()
+
+    assert [outcome.result for outcome in first] == [catalog.JOB_RETRY_WAIT]
+    waiting = harness.job("100008")
+    assert waiting.attempt_count == 1
+    with psycopg.connect(harness.database.migration_url, autocommit=True) as connection:
+        connection.execute(
+            "UPDATE jobs SET next_run_at = now() + interval '1 hour' WHERE dedupe_key = %s",
+            (dedupe_key("met", "100008"),),
+        )
+
+    harness.service.enqueue(["100008"])
+
+    again = harness.job("100008")
+    assert (again.state, again.attempt_count) == (catalog.JOB_RETRY_WAIT, 1)
+    # Still waiting out the hour, so nothing is claimed.
+    assert harness.service.drain() == []
+    assert harness.job("100008").state == catalog.JOB_RETRY_WAIT
+
+
+def test_a_due_recheck_resets_a_succeeded_negative_cache_job(harness: Harness) -> None:
+    harness.service.enqueue(["200001"])
+    harness.service.drain()
+    finished = harness.job("200001")
+    assert (finished.state, finished.attempt_count) == (catalog.JOB_SUCCEEDED, 1)
+
+    harness.expire_recheck("200001")
+    assert harness.service.enqueue(["200001"]) == {}
+
+    reset = harness.job("200001")
+    assert (reset.state, reset.attempt_count) == (catalog.JOB_PENDING, 0)
+
+
+def test_a_stale_claim_cannot_overwrite_the_worker_that_reclaimed_it(harness: Harness) -> None:
+    harness.service.enqueue(["100009"])
+    first = harness.job_store.claim(lease_seconds=300)
+    assert first is not None
+    harness.expire_lease("100009")
+    second = harness.job_store.claim(lease_seconds=300)
+
+    assert second is not None
+    assert first.claim_token != second.claim_token
+    assert harness.job_store.mark_dead(first, "old_worker_failure") is False
+    assert harness.job_store.retry_later(first, "old_worker_failure", 30) is False
+    # The reclaim stands. The expired worker wrote nothing.
+    current = harness.job("100009")
+    assert (current.state, current.last_error) == (catalog.JOB_LEASED, None)
+
+    record = harness.catalog_store.get_source_record(
+        UUID(str(first.payload["provider_id"])),
+        "100009",
+    )
+    assert record is not None
+    with pytest.raises(ClaimLost):
+        harness.catalog_store.record_rights_decision(
+            record,
+            job=first,
+            classification=catalog.RIGHTS_CC0,
+            eligibility=catalog.ELIGIBILITY_ELIGIBLE_CC0,
+            verification_status=catalog.VERIFICATION_VERIFIED,
+            verification_method=catalog.METHOD_PROVIDER_POLICY,
+            evidence_url=None,
+            raw_statement="stale",
+            decision_reason="stale",
+            landing_url=None,
+            original_url=None,
+            raw_metadata={},
+            recheck_days=None,
+        )
+    assert harness.scalar("SELECT count(*) FROM rights_evidence") == 0
+
+    assert harness.job_store.mark_dead(second, "current_worker") is True
+    dead = harness.job("100009")
+    assert (dead.state, dead.last_error) == (catalog.JOB_DEAD, "current_worker")
+
+
+def test_an_asset_commit_and_its_success_are_one_claim(harness: Harness) -> None:
+    """A lost claim cannot insert an asset, and a stored one is not dead-lettered."""
+    harness.service.enqueue(["100010"])
+    outcomes = harness.service.drain()
+    assert [outcome.result for outcome in outcomes] == [ingest_module.STORED]
+    assert harness.job("100010").state == catalog.JOB_SUCCEEDED
+
+    # Pretend the lease expired on the last attempt after the asset existed.
+    with psycopg.connect(harness.database.migration_url, autocommit=True) as connection:
+        connection.execute(
+            """
+            UPDATE jobs SET
+                state = 'leased',
+                attempt_count = %s,
+                leased_until = now() - interval '1 second',
+                claim_token = gen_random_uuid()
+            WHERE dedupe_key = %s
+            """,
+            (harness.settings.ingest_max_attempts, dedupe_key("met", "100010")),
+        )
+
+    assert harness.service.drain() == []
+    assert harness.job("100010").state == catalog.JOB_SUCCEEDED
+    assert harness.scalar("SELECT count(*) FROM assets") == 1
 
 
 def test_fixture_catalog_is_the_recorded_shape(harness: Harness) -> None:

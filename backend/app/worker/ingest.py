@@ -30,7 +30,8 @@ from app.integrations.object_store import (
     content_key,
 )
 from app.worker import jobs as job_module
-from app.worker.jobs import ClaimedJob, JobStore
+from app.worker.jobs import ClaimedJob, ClaimLost, JobStore
+from app.worker.lease import LeaseKeeper
 from app.worker.store import CatalogStore, SourceRecord
 
 logger = logging.getLogger("cc0.worker")
@@ -40,6 +41,9 @@ NEGATIVE_CACHED = "negative_cached"
 STORED = "stored"
 ALREADY_STORED = "already_stored"
 RESUMED = "stored_from_existing_objects"
+# The lease ran out mid-job and someone else owns the row now. Not a failure of
+# the record: whatever the current owner decides is the answer.
+CLAIM_LOST = "claim_lost"
 
 # Pipeline steps, recorded in jobs.payload for the operator. A hint only: the
 # retry path still re-reads the catalog and the object store.
@@ -53,6 +57,9 @@ class IngestOutcome:
     external_id: str
     result: str
     detail: str = ""
+    # True when the job already reached a terminal state inside the work's own
+    # transaction, so the caller must not write over it.
+    job_settled: bool = False
 
 
 class IngestService:
@@ -118,9 +125,10 @@ class IngestService:
                 dedupe, payload, max_attempts=self._settings.ingest_max_attempts
             ):
                 # The row already exists, so this reuses it rather than queueing
-                # a second one. request_run refuses a leased job (another worker
-                # holds it) and a dead one (it waits for an operator redrive).
-                self._jobs.request_run(dedupe)
+                # a second one. Only a finished job whose negative cache is due
+                # again gets a fresh attempt budget; a job that is still pending,
+                # waiting out a backoff, leased, or dead is left alone.
+                self._jobs.request_recheck_run(dedupe, record.id)
         return skipped
 
     # ---- worker loop ----
@@ -144,26 +152,51 @@ class IngestService:
     def run_claimed(self, job: ClaimedJob) -> IngestOutcome:
         external_id = str(job.payload.get("external_id", ""))
         try:
-            outcome = self._execute(job, external_id)
+            with LeaseKeeper(
+                self._jobs,
+                job,
+                lease_seconds=self._settings.ingest_lease_seconds,
+                deadline_seconds=self._settings.ingest_job_deadline_seconds,
+            ) as lease:
+                outcome = self._execute(job, external_id, lease)
+        except ClaimLost:
+            return self._abandon(job, external_id, "claim_lost")
         except PermanentFailure as failure:
             # Another attempt cannot change this answer, so skip the retry
             # budget entirely and dead-letter the row for inspection.
-            self._jobs.mark_dead(job.id, failure.reason)
+            if not self._jobs.mark_dead(job, failure.reason):
+                return self._abandon(job, external_id, failure.reason)
             logger.warning(
                 "ingest job dead external_id=%s reason=%s attempt=%s",
                 external_id,
                 failure.reason,
                 job.attempt_count,
             )
-            return IngestOutcome(external_id, catalog.JOB_DEAD, failure.reason)
+            return IngestOutcome(external_id, catalog.JOB_DEAD, failure.reason, job_settled=True)
         except TransientFailure as failure:
             return self._schedule_retry(job, external_id, failure)
         except ObjectStoreUnavailable as failure:
             return self._schedule_retry(
                 job, external_id, TransientFailure("object_store", str(failure))
             )
-        self._jobs.succeed(job.id)
+        if not outcome.job_settled and not self._jobs.succeed(job):
+            return self._abandon(job, external_id, outcome.result)
         return outcome
+
+    def _abandon(self, job: ClaimedJob, external_id: str, detail: str) -> IngestOutcome:
+        """Walk away without writing. The row belongs to its current claim.
+
+        The work this attempt did is not lost: objects are content-addressed
+        and the catalog is what a later attempt reads, so whoever holds the job
+        now reaches the same place.
+        """
+        logger.warning(
+            "ingest job claim lost external_id=%s attempt=%s detail=%s",
+            external_id,
+            job.attempt_count,
+            detail,
+        )
+        return IngestOutcome(external_id, CLAIM_LOST, detail, job_settled=True)
 
     def _schedule_retry(
         self,
@@ -172,14 +205,15 @@ class IngestService:
         failure: TransientFailure,
     ) -> IngestOutcome:
         if job.attempts_exhausted:
-            self._jobs.mark_dead(job.id, failure.reason)
+            if not self._jobs.mark_dead(job, failure.reason):
+                return self._abandon(job, external_id, failure.reason)
             logger.warning(
                 "ingest job dead after retries external_id=%s reason=%s attempts=%s",
                 external_id,
                 failure.reason,
                 job.attempt_count,
             )
-            return IngestOutcome(external_id, catalog.JOB_DEAD, failure.reason)
+            return IngestOutcome(external_id, catalog.JOB_DEAD, failure.reason, job_settled=True)
         delay = failure.retry_after
         if delay is None:
             delay = job_module.backoff_seconds(
@@ -187,7 +221,8 @@ class IngestService:
                 base_seconds=self._settings.ingest_backoff_base_seconds,
                 max_seconds=self._settings.ingest_backoff_max_seconds,
             )
-        self._jobs.retry_later(job.id, failure.reason, delay)
+        if not self._jobs.retry_later(job, failure.reason, delay):
+            return self._abandon(job, external_id, failure.reason)
         logger.info(
             "ingest job retrying external_id=%s reason=%s attempt=%s delay=%.1f",
             external_id,
@@ -195,11 +230,13 @@ class IngestService:
             job.attempt_count,
             delay,
         )
-        return IngestOutcome(external_id, catalog.JOB_RETRY_WAIT, failure.reason)
+        return IngestOutcome(
+            external_id, catalog.JOB_RETRY_WAIT, failure.reason, job_settled=True
+        )
 
     # ---- pipeline ----
 
-    def _execute(self, job: ClaimedJob, external_id: str) -> IngestOutcome:
+    def _execute(self, job: ClaimedJob, external_id: str, lease: LeaseKeeper) -> IngestOutcome:
         provider_id = UUID(str(job.payload["provider_id"]))
         record = self._catalog.get_source_record(provider_id, external_id)
         if record is None:
@@ -214,11 +251,11 @@ class IngestService:
 
         item: MetItem | None = None
         if not self._has_current_cc0_evidence(record):
-            record, item = self._run_rights_gate(job, record, external_id)
+            record, item = self._run_rights_gate(job, record, external_id, lease)
             if record.eligibility_status != catalog.ELIGIBILITY_ELIGIBLE_CC0:
                 return IngestOutcome(external_id, NEGATIVE_CACHED, record.eligibility_status)
 
-        return self._store_eligible(job, record, item, external_id)
+        return self._store_eligible(job, record, item, external_id, lease)
 
     def _has_current_cc0_evidence(self, record: SourceRecord) -> bool:
         """Skip the metadata request when the stored decision still stands.
@@ -242,18 +279,26 @@ class IngestService:
         job: ClaimedJob,
         record: SourceRecord,
         external_id: str,
+        lease: LeaseKeeper,
     ) -> tuple[SourceRecord, MetItem]:
-        self._jobs.merge_payload(job.id, {"last_step": STEP_RIGHTS_CHECK})
+        self._jobs.merge_payload(job, {"last_step": STEP_RIGHTS_CHECK})
         item = self._adapter.fetch_item(external_id)
-        decision = rights.decide(item, self._adapter.policy_url)
+        lease.check()
+        decision = rights.decide(
+            item,
+            self._adapter.policy_url,
+            trusted_public_domain_flag=self._adapter.trusted_public_domain_flag,
+        )
         self._catalog.record_rights_decision(
             record,
+            job=job,
             classification=decision.classification,
             eligibility=decision.eligibility,
             verification_status=decision.verification_status,
             verification_method=decision.verification_method,
             evidence_url=decision.evidence_url,
             raw_statement=decision.raw_statement,
+            decision_reason=decision.reason,
             landing_url=item.landing_url,
             original_url=item.original_url,
             raw_metadata=item.raw_metadata,
@@ -285,27 +330,31 @@ class IngestService:
         record: SourceRecord,
         item: MetItem | None,
         external_id: str,
+        lease: LeaseKeeper,
     ) -> IngestOutcome:
         url = validate_url(record.original_url, self._settings.image_host_allowlist, what="image")
+        if item is None:
+            # The rights gate was skipped because its decision still stands, so
+            # the asset columns come from the stored allowlisted metadata. This
+            # path performs no metadata request. Validating it before the
+            # download keeps a record we cannot describe from costing bytes.
+            item = met.normalize(external_id, record.raw_metadata)
+            if item.invalid_reason is not None:
+                raise PermanentFailure("stored_metadata_invalid", item.invalid_reason)
+
         reused = self._reuse_stored_objects(job.payload)
         if reused is None:
-            self._jobs.merge_payload(job.id, {"last_step": STEP_DOWNLOAD})
-            prepared = self._download(url)
+            self._jobs.merge_payload(job, {"last_step": STEP_DOWNLOAD})
+            prepared = self._download(url, lease)
             result = STORED
         else:
             prepared = reused
             result = RESUMED
 
-        self._jobs.merge_payload(job.id, {"last_step": STEP_STORE, "stored": prepared})
-        if item is None:
-            # The rights gate was skipped because its decision still stands, so
-            # the asset columns come from the stored allowlisted metadata. This
-            # path performs no metadata request.
-            item = met.normalize(external_id, record.raw_metadata)
-            if item.invalid_reason is not None:
-                raise PermanentFailure("stored_metadata_invalid", item.invalid_reason)
-
+        lease.check()
+        self._jobs.merge_payload(job, {"last_step": STEP_STORE, "stored": prepared})
         asset_id = self._catalog.store_asset(
+            job=job,
             source_record_id=record.id,
             provider_id=record.provider_id,
             creator_name=item.creator_name,
@@ -323,25 +372,29 @@ class IngestService:
             width=prepared["width"],
             height=prepared["height"],
         )
+        # store_asset committed the job's success alongside the row above.
         if asset_id is None:
-            return IngestOutcome(external_id, ALREADY_STORED, prepared["sha256"])
+            return IngestOutcome(
+                external_id, ALREADY_STORED, prepared["sha256"], job_settled=True
+            )
         logger.info(
             "asset stored external_id=%s sha256=%s result=%s",
             external_id,
             prepared["sha256"],
             result,
         )
-        return IngestOutcome(external_id, result, prepared["sha256"])
+        return IngestOutcome(external_id, result, prepared["sha256"], job_settled=True)
 
-    def _download(self, url: str) -> dict[str, Any]:
+    def _download(self, url: str, lease: LeaseKeeper) -> dict[str, Any]:
         """The only image request in the pipeline, followed by both object puts."""
-        fetched = self._fetcher.fetch(url)
+        fetched = self._fetcher.fetch(url, guard=lease.check)
         processed = images.process(
             fetched.body,
             fetched.content_type,
             max_pixels=self._settings.ingest_max_image_pixels,
             thumbnail_max_pixels=self._settings.ingest_thumbnail_max_pixels,
         )
+        lease.check()
         original_key = content_key(ORIGINAL_PREFIX, processed.sha256, processed.extension)
         thumbnail_key = content_key(THUMBNAIL_PREFIX, processed.sha256, images.THUMBNAIL_EXTENSION)
         self._objects.put(original_key, processed.original, processed.mime_type, processed.sha256)

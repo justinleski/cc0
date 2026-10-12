@@ -189,6 +189,9 @@ class Settings(BaseSettings):
     ingest_backoff_base_seconds: float = Field(default=2.0, gt=0)
     ingest_backoff_max_seconds: float = Field(default=300.0, gt=0)
     ingest_lease_seconds: int = Field(default=300, gt=0)
+    # The lease is renewed while a job runs, so this is what actually bounds
+    # one attempt. Without it a stalled transfer could hold its claim forever.
+    ingest_job_deadline_seconds: float = Field(default=900.0, gt=0)
     # Negative-cache recheck policy. Unknown is revisited sooner than a firm
     # non-CC0 answer because it is the status most likely to be wrong.
     ingest_recheck_unknown_days: int = Field(default=7, gt=0)

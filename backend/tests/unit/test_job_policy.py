@@ -33,13 +33,13 @@ def test_jitter_keeps_a_failed_batch_from_retrying_in_lockstep():
     assert all(2.0 <= delay <= 4.0 for delay in delays)
 
 
-def test_a_dead_or_leased_job_is_not_resettable_by_a_repeat_ingest():
+def test_only_a_finished_job_is_resettable_by_a_repeat_ingest():
     # A failure an operator has not seen must survive someone re-running
     # ingestion, and an in-flight job belongs to the worker holding its lease.
     assert catalog.JOB_DEAD not in RESETTABLE_STATES
     assert catalog.JOB_LEASED not in RESETTABLE_STATES
-    assert set(RESETTABLE_STATES) == {
-        catalog.JOB_PENDING,
-        catalog.JOB_RETRY_WAIT,
-        catalog.JOB_SUCCEEDED,
-    }
+    # A job that is waiting out a backoff keeps the attempts it has spent, so a
+    # repeat ingestion cannot hand a failing record an unlimited retry budget.
+    assert catalog.JOB_RETRY_WAIT not in RESETTABLE_STATES
+    assert catalog.JOB_PENDING not in RESETTABLE_STATES
+    assert set(RESETTABLE_STATES) == {catalog.JOB_SUCCEEDED}

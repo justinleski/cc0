@@ -1,10 +1,15 @@
 """Catalog reads and writes for the ingestion worker.
 
-Two rules shape this module. Rights evidence is append-only: a recheck inserts
+Three rules shape this module. Rights evidence is append-only: a recheck inserts
 a row, it never edits the previous answer, which is what makes the history
-auditable. And the asset row is inserted only in the transaction that marks it
+auditable. The asset row is inserted only in the transaction that marks it
 STORED, after both objects are written, so a failed job can never leave a
-half-published asset behind.
+half-published asset behind. And every write a worker makes happens under its
+claim: the job row is locked and its token checked first, so a worker whose
+lease expired cannot record a decision the job's current owner would contradict.
+
+Committing the asset and the job's success together is what keeps a crash on
+the last attempt from turning finished work into a dead letter.
 
 Timestamps come from `now()` in the database, not from the worker process, so a
 recheck window does not depend on host clock skew.
@@ -16,9 +21,10 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Engine, text
+from sqlalchemy import Connection, Engine, text
 
 from app.db import catalog
+from app.worker.jobs import CLAIM_HELD, ClaimedJob, ClaimLost
 
 
 @dataclass(frozen=True)
@@ -69,6 +75,25 @@ _SOURCE_COLUMNS = """
     rights_classification, eligibility_status, next_recheck_at,
     (next_recheck_at IS NOT NULL AND next_recheck_at <= now()) AS recheck_due
 """
+
+
+def _hold_claim(connection: Connection, job: ClaimedJob) -> None:
+    """Lock the job row for this transaction, or refuse to write at all.
+
+    `FOR UPDATE` keeps the row from being reclaimed between this check and the
+    commit, so the catalog write and the job state it belongs to settle on the
+    same answer about who owns the work.
+    """
+    held = connection.execute(
+        text(f"SELECT id FROM jobs WHERE {CLAIM_HELD} FOR UPDATE"),
+        {
+            "job_id": job.id,
+            "claim_token": job.claim_token,
+            "leased": catalog.JOB_LEASED,
+        },
+    ).scalar_one_or_none()
+    if held is None:
+        raise ClaimLost(job.id)
 
 
 def _source_record(row: Any) -> SourceRecord:
@@ -158,12 +183,14 @@ class CatalogStore:
         self,
         record: SourceRecord,
         *,
+        job: ClaimedJob,
         classification: str,
         eligibility: str,
         verification_status: str,
         verification_method: str,
         evidence_url: str | None,
         raw_statement: str,
+        decision_reason: str,
         landing_url: str | None,
         original_url: str | None,
         raw_metadata: dict[str, Any],
@@ -174,8 +201,12 @@ class CatalogStore:
         `recheck_days` is None for an eligible record: M1 does not revisit a
         verified CC0 decision, so it gets no recheck deadline and a repeat run
         cannot be mistaken for a due recheck.
+
+        Raises ClaimLost when this worker no longer holds the job, so an
+        expired attempt cannot overwrite a rights answer someone else recorded.
         """
         with self._engine.begin() as connection:
+            _hold_claim(connection, job)
             connection.execute(
                 text(
                     """
@@ -209,10 +240,12 @@ class CatalogStore:
                     """
                     INSERT INTO rights_evidence (
                         source_record_id, rights_type, verification_status,
-                        evidence_url, raw_statement, verification_method
+                        evidence_url, raw_statement, verification_method,
+                        decision_reason
                     ) VALUES (
                         :source_record_id, :rights_type, :verification_status,
-                        :evidence_url, :raw_statement, :verification_method
+                        :evidence_url, :raw_statement, :verification_method,
+                        :decision_reason
                     )
                     """
                 ),
@@ -223,6 +256,7 @@ class CatalogStore:
                     "evidence_url": evidence_url,
                     "raw_statement": raw_statement,
                     "verification_method": verification_method,
+                    "decision_reason": decision_reason,
                 },
             )
 
@@ -285,6 +319,7 @@ class CatalogStore:
     def store_asset(
         self,
         *,
+        job: ClaimedJob,
         source_record_id: UUID,
         provider_id: UUID,
         creator_name: str | None,
@@ -302,12 +337,17 @@ class CatalogStore:
         width: int,
         height: int,
     ) -> UUID | None:
-        """Insert the asset as STORED. Returns None when a row already exists.
+        """Insert the asset as STORED and finish the job. None when it existed.
 
         The unique constraint on source_record_id is what makes a repeated
         ingestion idempotent, so the conflict is expected rather than an error.
+
+        The job reaches `succeeded` in this same transaction. Splitting the two
+        left a window where a crash after the asset committed dead-lettered
+        work that was already done, and a later attempt had to rediscover it.
         """
         with self._engine.begin() as connection:
+            _hold_claim(connection, job)
             creator_id = None
             if creator_external_key is not None:
                 creator_id = connection.execute(
@@ -327,8 +367,8 @@ class CatalogStore:
                         "name": creator_name or creator_external_key,
                         "external_ids": json.dumps(creator_external_ids),
                     },
-                ).scalar_one()
-            return connection.execute(
+                        ).scalar_one()
+            asset_id = connection.execute(
                 text(
                     """
                     INSERT INTO assets (
@@ -361,3 +401,19 @@ class CatalogStore:
                     "status": catalog.ASSET_STORED,
                 },
             ).scalar_one_or_none()
+            connection.execute(
+                text(
+                    """
+                    UPDATE jobs SET
+                        state = :succeeded,
+                        leased_until = NULL,
+                        claim_token = NULL,
+                        next_run_at = NULL,
+                        last_error = NULL,
+                        updated_at = now()
+                    WHERE id = :job_id
+                    """
+                ),
+                {"job_id": job.id, "succeeded": catalog.JOB_SUCCEEDED},
+            )
+            return asset_id

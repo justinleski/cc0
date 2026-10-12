@@ -1,6 +1,8 @@
 """Bounded decoding, digests, and content-addressed keys."""
 
 import hashlib
+import struct
+import zlib
 from io import BytesIO
 
 import pytest
@@ -21,6 +23,21 @@ def _png(width: int = 64, height: int = 32) -> bytes:
     buffer = BytesIO()
     Image.new("RGB", (width, height), (200, 10, 10)).save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def _png_header_claiming(width: int, height: int) -> bytes:
+    """A few hundred bytes that declare an enormous image, with no pixels."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(b"\x00"))
+        + chunk(b"IEND", b"")
+    )
 
 
 def test_original_is_hashed_and_thumbnail_is_bounded_webp():
@@ -61,6 +78,17 @@ def test_undecodable_and_truncated_bodies_are_permanent():
 def test_pixel_count_is_checked_from_the_header_before_decoding():
     with pytest.raises(PermanentFailure, match="image_too_many_pixels"):
         images.process(_jpeg(), "image/jpeg", max_pixels=1000, thumbnail_max_pixels=512)
+
+
+def test_a_decompression_bomb_is_a_permanent_failure_not_a_crash():
+    """Pillow's own ceiling is not an OSError, so it would escape the pipeline.
+
+    A header claiming far more pixels than Pillow allows raises before any are
+    loaded. Uncaught, it would kill the worker and leave the job leased.
+    """
+    bomb = _png_header_claiming(40_000, 40_000)
+    with pytest.raises(PermanentFailure, match="image_too_many_pixels"):
+        images.process(bomb, "image/png", max_pixels=50_000_000, thumbnail_max_pixels=512)
 
 
 def test_keys_are_content_addressed_and_fanned_out():

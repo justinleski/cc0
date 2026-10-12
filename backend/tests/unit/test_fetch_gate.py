@@ -1,8 +1,11 @@
 """Limits on the only request that ever touches image bytes."""
 
+import logging
+
 import httpx
 import pytest
 
+from app.core.logging import configure_logging
 from app.ingestion.errors import PermanentFailure, TransientFailure
 from app.ingestion.fetch import (
     HttpImageFetcher,
@@ -152,3 +155,15 @@ def test_pacer_spaces_requests_for_one_provider():
     pacer.wait()
     # Two requests per second means the second one waits out the remainder.
     assert slept == [pytest.approx(0.5)]
+
+
+def test_httpx_does_not_log_request_urls_at_info(caplog: pytest.LogCaptureFixture) -> None:
+    """A signed query string on an allowlisted URL must not reach the log."""
+    configure_logging()
+    with caplog.at_level(logging.DEBUG):
+        logging.getLogger("httpx").info(
+            "HTTP Request: GET https://images.example/a.jpg?token=SECRET"
+        )
+        logging.getLogger("httpcore").info("connect_tcp.started host=images.example")
+    assert "SECRET" not in caplog.text
+    assert "connect_tcp" not in caplog.text

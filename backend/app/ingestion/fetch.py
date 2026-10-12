@@ -35,8 +35,14 @@ class FetchedImage:
     body: bytes
 
 
+# Called between chunks. It raises when the worker has lost its claim or run
+# past its deadline, so a long transfer stops instead of finishing bytes that
+# nobody is going to be allowed to commit.
+Guard = Callable[[], None]
+
+
 class ImageFetcher(Protocol):
-    def fetch(self, url: str) -> FetchedImage: ...
+    def fetch(self, url: str, *, guard: Guard | None = None) -> FetchedImage: ...
 
 
 def validate_url(url: str | None, allowed_hosts: frozenset[str], *, what: str) -> str:
@@ -177,16 +183,18 @@ class HttpImageFetcher:
     def close(self) -> None:
         self._client.close()
 
-    def fetch(self, url: str) -> FetchedImage:
+    def fetch(self, url: str, *, guard: Guard | None = None) -> FetchedImage:
         current = validate_url(url, self._allowed_hosts, what="image")
         for _ in range(self._max_redirects + 1):
-            response, location = self._attempt(current)
+            response, location = self._attempt(current, guard)
             if location is None:
                 return response
             current = validate_url(location, self._allowed_hosts, what="image")
         raise PermanentFailure("too_many_redirects", str(self._max_redirects))
 
-    def _attempt(self, url: str) -> tuple[FetchedImage | None, str | None]:
+    def _attempt(self, url: str, guard: Guard | None) -> tuple[FetchedImage | None, str | None]:
+        if guard is not None:
+            guard()
         self._resolver(urlsplit(url).hostname or "")
         if self._pacer is not None:
             self._pacer.wait()
@@ -199,14 +207,14 @@ class HttpImageFetcher:
                     return None, location
                 classify_status(response.status_code, response.headers)
                 content_type = verify_content_type(response.headers.get("content-type"))
-                body = self._read_capped(response)
+                body = self._read_capped(response, guard)
         except httpx.TimeoutException as exc:
             raise TransientFailure("timeout", type(exc).__name__) from exc
         except httpx.HTTPError as exc:
             raise TransientFailure("connection_error", type(exc).__name__) from exc
         return FetchedImage(url=url, content_type=content_type, body=body), None
 
-    def _read_capped(self, response: httpx.Response) -> bytes:
+    def _read_capped(self, response: httpx.Response, guard: Guard | None) -> bytes:
         # Declared length is only a hint; the stream is still counted, so a
         # lying or absent Content-Length cannot exhaust memory.
         declared = response.headers.get("content-length")
@@ -215,6 +223,10 @@ class HttpImageFetcher:
         chunks: list[bytes] = []
         total = 0
         for chunk in response.iter_bytes():
+            # A read timeout bounds one chunk, not the transfer. This is what
+            # stops a trickling stream from outliving the job it belongs to.
+            if guard is not None:
+                guard()
             total += len(chunk)
             if total > self._max_bytes:
                 raise PermanentFailure("too_large", str(self._max_bytes))

@@ -31,8 +31,9 @@ def _payload(object_id: int, **overrides) -> dict:
 
 
 def _decide(object_id: int, **overrides) -> rights.RightsDecision:
+    """Decide as the Met adapter does: its policy defines the item flag."""
     item = met.normalize(str(object_id), _payload(object_id, **overrides))
-    return rights.decide(item, met.POLICY_URL)
+    return rights.decide(item, met.POLICY_URL, trusted_public_domain_flag=True)
 
 
 def test_explicit_provider_flag_with_policy_is_the_only_pass():
@@ -70,10 +71,84 @@ def test_a_restrictive_statement_beats_an_affirmative_flag():
 
 
 @pytest.mark.parametrize(
+    ("statement", "classification"),
+    [
+        # A license URL is the form the item statement actually takes most of
+        # the time, and no amount of substring matching on prose catches it.
+        ("https://creativecommons.org/licenses/by/4.0/", catalog.RIGHTS_OTHER_OPEN),
+        ("https://creativecommons.org/licenses/by-nc-sa/3.0/", catalog.RIGHTS_OTHER_OPEN),
+        ("http://creativecommons.org/publicdomain/mark/1.0/", catalog.RIGHTS_PUBLIC_DOMAIN_MARK),
+        ("Permission required; personal use only", catalog.RIGHTS_REJECTED),
+        ("Reproduction only by permission of the artist", catalog.RIGHTS_REJECTED),
+        ("May not be reproduced without written consent", catalog.RIGHTS_REJECTED),
+        ("Rights reserved by the artist", catalog.RIGHTS_REJECTED),
+    ],
+)
+def test_a_conflicting_license_or_restriction_fails_closed(statement, classification):
+    """The flag cannot admit an item whose own statement contradicts it."""
+    decision = _decide(200001, isPublicDomain=True, rightsAndReproduction=statement)
+    assert not decision.is_eligible_cc0
+    assert (decision.eligibility, decision.classification) == (
+        catalog.ELIGIBILITY_NON_CC0_CACHED,
+        classification,
+    )
+    assert decision.reason == "restrictive_statement"
+    # The provider's own words survive as the evidence for that answer.
+    assert decision.raw_statement == statement
+
+
+def test_an_unrecognized_credit_line_still_passes_for_a_trusted_source():
+    """Not every statement is a license. A credit line is not a restriction."""
+    decision = _decide(100001, rightsAndReproduction="Gift of a generous donor, 1952")
+    assert decision.is_eligible_cc0
+    assert decision.reason == "provider_policy_and_item_flag"
+    # Our reading of the flag, with the provider's text kept beside it.
+    assert "isPublicDomain=true" in decision.raw_statement
+    assert "Gift of a generous donor, 1952" in decision.raw_statement
+
+
+def test_an_untrusted_source_cannot_admit_anything_on_the_flag_alone():
+    """A flag only means CC0 where a published policy says so."""
+    item = met.normalize("100001", _payload(100001))
+    decision = rights.decide(item, met.POLICY_URL)
+
+    assert not decision.is_eligible_cc0
+    assert decision.eligibility == catalog.ELIGIBILITY_UNKNOWN_CACHED
+    assert decision.reason == "untrusted_public_domain_flag"
+    # The default is the safe one, so a source added later cannot inherit the
+    # Met's exception by forgetting to opt out of it.
+    assert rights.decide(item, met.POLICY_URL, trusted_public_domain_flag=True).is_eligible_cc0
+
+
+def test_an_explicit_cc0_dedication_stands_without_a_trusted_policy():
+    item = met.normalize(
+        "100001",
+        _payload(100001, rightsAndReproduction="CC0 1.0 Universal"),
+    )
+    decision = rights.decide(item, met.POLICY_URL)
+
+    assert decision.is_eligible_cc0
+    assert decision.verification_method == catalog.METHOD_ITEM_STATEMENT
+    assert decision.reason == "explicit_cc0_statement"
+
+
+def test_a_statement_that_both_dedicates_and_restricts_is_unknown():
+    """Not a firm non-CC0 answer. No answer, which means no bytes."""
+    decision = _decide(
+        200001,
+        rightsAndReproduction="CC0 for the metadata; \u00a9 2020 for the image",
+    )
+    assert decision.eligibility == catalog.ELIGIBILITY_UNKNOWN_CACHED
+    assert decision.reason == "contradictory_rights_statement"
+
+
+@pytest.mark.parametrize(
     ("overrides", "reason"),
     [
         ({"isPublicDomain": None}, "missing_rights_flag"),
-        ({"isPublicDomain": "yes"}, "missing_rights_flag"),
+        # A string where the flag belongs is not a CC0 claim we can read, so
+        # the payload is not the shape this adapter validated against.
+        ({"isPublicDomain": "yes"}, "metadata_field_wrong_type"),
         ({"objectURL": "http://www.metmuseum.org/art/1"}, "missing_landing_url"),
         ({"objectURL": "https://example.com/art/1"}, "missing_landing_url"),
         ({"objectID": None}, "missing_object_id"),
@@ -104,7 +179,7 @@ def test_metadata_is_reduced_to_the_allowlist_without_previews():
             thumbnail="data:image/png;base64,iVBORw0KGgo=",
         ),
     )
-    assert set(item.raw_metadata) <= set(met.METADATA_FIELDS)
+    assert set(item.raw_metadata) <= set(met.METADATA_FIELD_NAMES)
     # A provider preview is image bytes. A negative-cache row must not keep it.
     assert "thumbnail" not in item.raw_metadata
     assert "primaryImageSmall" not in item.raw_metadata
@@ -115,6 +190,39 @@ def test_metadata_is_reduced_to_the_allowlist_without_previews():
 def test_a_data_uri_image_field_is_dropped_so_it_cannot_be_fetched_or_stored():
     item = met.normalize("100001", _payload(100001, primaryImage="data:image/jpeg;base64,/9j/4A=="))
     assert item.original_url is None
+
+
+def test_a_nested_value_under_an_allowed_name_never_reaches_the_cache():
+    """An allowlisted name is not a licence to store whatever is under it."""
+    item = met.normalize(
+        "100001",
+        _payload(100001, title={"preview": "data:image/png;base64,iVBORw0KGgo="}),
+    )
+    assert item.invalid_reason == "metadata_field_wrong_type"
+    assert "title" not in item.raw_metadata
+    assert "data:" not in json.dumps(item.raw_metadata)
+    # The item page survives the rejection: that link is the negative cache.
+    assert item.landing_url is not None
+
+
+def test_an_oversized_field_is_rejected_rather_than_stored():
+    item = met.normalize("100001", _payload(100001, medium="x" * (met.MAX_TEXT_LENGTH + 1)))
+    assert item.invalid_reason == "metadata_field_wrong_type"
+    assert "medium" not in item.raw_metadata
+
+
+@pytest.mark.parametrize(
+    "years",
+    [
+        {"objectBeginDate": 1900, "objectEndDate": 1880},
+        {"objectBeginDate": 10**12, "objectEndDate": 10**12},
+    ],
+)
+def test_unusable_years_stop_before_any_download(years):
+    """These violate the asset constraint, which only fails after both PUTs."""
+    decision = _decide(100001, **years)
+    assert decision.eligibility == catalog.ELIGIBILITY_UNKNOWN_CACHED
+    assert decision.reason == "invalid_year_range"
 
 
 def test_creator_identity_prefers_an_authority_url_over_a_name():
@@ -138,7 +246,11 @@ def test_fixture_catalog_holds_ten_cc0_records_and_the_negative_cases():
     )
     adapter = met.MetAdapter(source)
     decisions = {
-        external_id: rights.decide(adapter.fetch_item(external_id), adapter.policy_url)
+        external_id: rights.decide(
+            adapter.fetch_item(external_id),
+            adapter.policy_url,
+            trusted_public_domain_flag=adapter.trusted_public_domain_flag,
+        )
         for external_id in adapter.discover(100)
     }
     eligible = [key for key, value in decisions.items() if value.is_eligible_cc0]

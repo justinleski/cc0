@@ -25,26 +25,36 @@ LANDING_HOSTS = frozenset({"www.metmuseum.org", "metmuseum.org"})
 # Everything the catalog is allowed to keep from a provider payload. The rest of
 # the response is dropped, including any base64 or data-URI preview a provider
 # might embed: a negative-cache row must hold metadata, never image bytes.
-METADATA_FIELDS = (
-    "objectID",
-    "title",
-    "artistDisplayName",
-    "artistULAN_URL",
-    "artistWikidata_URL",
-    "objectDate",
-    "objectBeginDate",
-    "objectEndDate",
-    "objectURL",
-    "primaryImage",
-    "isPublicDomain",
-    "rightsAndReproduction",
-    "medium",
-    "classification",
-    "city",
-    "country",
+METADATA_FIELDS: tuple[tuple[str, type], ...] = (
+    ("objectID", int),
+    ("title", str),
+    ("artistDisplayName", str),
+    ("artistULAN_URL", str),
+    ("artistWikidata_URL", str),
+    ("objectDate", str),
+    ("objectBeginDate", int),
+    ("objectEndDate", int),
+    ("objectURL", str),
+    ("primaryImage", str),
+    ("isPublicDomain", bool),
+    ("rightsAndReproduction", str),
+    ("medium", str),
+    ("classification", str),
+    ("city", str),
+    ("country", str),
 )
+METADATA_FIELD_NAMES = tuple(name for name, _ in METADATA_FIELDS)
 
-_DATA_URI = re.compile(r"^\s*data:", re.IGNORECASE)
+# A data URI anywhere in a value is image bytes wearing a string, so the field
+# is dropped rather than stored. The trailing comma is what separates a data
+# URI's header from its payload; ordinary prose containing "data:" has none.
+_DATA_URI = re.compile(r"data:[^,\s]*,", re.IGNORECASE)
+# Generous next to real Met values, and small enough that a hostile or broken
+# payload cannot turn the negative cache into bulk storage.
+MAX_TEXT_LENGTH = 4096
+# Postgres int4, which is what the asset year columns are.
+_MIN_YEAR = -2_147_483_648
+_MAX_YEAR = 2_147_483_647
 
 
 class JsonSource(Protocol):
@@ -94,16 +104,42 @@ def parse_catalog(payload: Any, limit: int) -> list[str]:
     return external_ids[:limit]
 
 
-def _allowlisted(payload: dict[str, Any]) -> dict[str, Any]:
+def _allowlisted(payload: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """Keep the allowlisted fields, and only at their expected scalar type.
+
+    Returns the kept fields and the first field whose value was not the shape
+    this adapter validates against. A name on the allowlist is not enough: a
+    nested object or an oversized string under an allowed name would otherwise
+    carry an embedded preview or an unbounded body straight into the negative
+    cache, which is supposed to hold metadata and nothing else.
+
+    Every field is still examined after a bad one, so what the cache keeps does
+    not depend on which field happened to be wrong first.
+    """
     kept: dict[str, Any] = {}
-    for name in METADATA_FIELDS:
+    wrong_shape: str | None = None
+    for name, expected in METADATA_FIELDS:
         value = payload.get(name)
         if value is None or value == "":
             continue
-        if isinstance(value, str) and _DATA_URI.match(value):
+        if not _is_expected(value, expected) or (
+            isinstance(value, str) and len(value) > MAX_TEXT_LENGTH
+        ):
+            wrong_shape = wrong_shape or name
+            continue
+        if isinstance(value, str) and _DATA_URI.search(value):
             continue
         kept[name] = value
-    return kept
+    return kept, wrong_shape
+
+
+def _is_expected(value: Any, expected: type) -> bool:
+    # bool is an int in Python, and neither field tolerates the other's values.
+    if expected is bool:
+        return isinstance(value, bool)
+    if expected is int:
+        return isinstance(value, int) and not isinstance(value, bool)
+    return isinstance(value, expected)
 
 
 def _text(payload: dict[str, Any], name: str) -> str | None:
@@ -114,6 +150,14 @@ def _text(payload: dict[str, Any], name: str) -> str | None:
 def _year(payload: dict[str, Any], name: str) -> int | None:
     value = payload.get(name)
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _years_usable(start: int | None, end: int | None) -> bool:
+    """Ordered and inside int4, which is what the asset columns accept."""
+    for year in (start, end):
+        if year is not None and not _MIN_YEAR <= year <= _MAX_YEAR:
+            return False
+    return start is None or end is None or start <= end
 
 
 def _landing_url(payload: dict[str, Any]) -> str | None:
@@ -160,10 +204,24 @@ def normalize(external_id: str, payload: Any) -> MetItem:
     if not isinstance(payload, dict):
         return MetItem(external_id=external_id, raw_metadata={}, invalid_reason="payload_not_json")
 
-    kept = _allowlisted(payload)
+    kept, wrong_shape = _allowlisted(payload)
+    landing_url = _landing_url(kept)
 
     def rejected(reason: str) -> MetItem:
-        return MetItem(external_id=external_id, raw_metadata=kept, invalid_reason=reason)
+        # A rejected payload still earns its item page. That link is what the
+        # negative cache is for, and what a recheck or an operator starts from.
+        return MetItem(
+            external_id=external_id,
+            raw_metadata=kept,
+            landing_url=landing_url,
+            invalid_reason=reason,
+        )
+
+    if wrong_shape == "primaryImage":
+        # The one field that becomes a URL we would otherwise request.
+        return rejected("image_url_not_a_string")
+    if wrong_shape is not None:
+        return rejected("metadata_field_wrong_type")
 
     object_id = kept.get("objectID")
     if not isinstance(object_id, int) or isinstance(object_id, bool):
@@ -173,14 +231,18 @@ def normalize(external_id: str, payload: Any) -> MetItem:
         # this one, whatever its rights fields say.
         return rejected("object_id_mismatch")
 
-    landing_url = _landing_url(kept)
     if landing_url is None:
         return rejected("missing_landing_url")
 
-    original = kept.get("primaryImage")
-    if original is not None and not isinstance(original, str):
-        return rejected("image_url_not_a_string")
+    year_start = _year(kept, "objectBeginDate")
+    year_end = _year(kept, "objectEndDate")
+    if not _years_usable(year_start, year_end):
+        # Caught here rather than at the asset insert, which happens after both
+        # objects are written: a record we cannot describe should never have
+        # cost a download.
+        return rejected("invalid_year_range")
 
+    original = kept.get("primaryImage")
     flag = kept.get("isPublicDomain")
     name, creator_key, creator_ids = _creator(kept)
     return MetItem(
@@ -191,8 +253,8 @@ def normalize(external_id: str, payload: Any) -> MetItem:
         title=_text(kept, "title"),
         description=_text(kept, "medium"),
         location_label=_location_label(kept),
-        created_year_start=_year(kept, "objectBeginDate"),
-        created_year_end=_year(kept, "objectEndDate"),
+        created_year_start=year_start,
+        created_year_end=year_end,
         creator_name=name,
         creator_external_key=creator_key,
         creator_external_ids=creator_ids,
@@ -207,6 +269,10 @@ class MetAdapter:
     provider_name = PROVIDER_NAME
     base_url = BASE_URL
     policy_url = POLICY_URL
+    # The policy above states what `isPublicDomain: true` means for the hosted
+    # image, which is what lets the rights gate read that flag as a CC0 claim.
+    # A source without such a policy must leave this False and fail closed.
+    trusted_public_domain_flag = True
 
     def __init__(self, source: JsonSource) -> None:
         self._source = source

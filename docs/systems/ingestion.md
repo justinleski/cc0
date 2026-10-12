@@ -61,11 +61,14 @@ flowchart TD
   image URL string, rights fields). Data URIs and the rest of the payload are
   dropped.
 - `rights_evidence` is an append-only observation. A recheck inserts a row; no
-  code path updates or deletes one. Evidence attaches to the source record even
-  when no asset ever exists.
+  code path updates or deletes one. `raw_statement` keeps the provider's own
+  text, and `decision_reason` stores the stable token for why the gate decided
+  what it did. Evidence attaches to the source record even when no asset ever
+  exists.
 - `assets` is bytes we actually stored, unique on `source_record_id`. `sha256` is
   indexed but deliberately not unique.
-- `jobs` is the lock and the retry ledger, not the audit log.
+- `jobs` is the lock and the retry ledger, not the audit log. `claim_token` is
+  issued on each claim and required on every later write.
 - `creators` are provider-scoped: the Met artist authority URL when present,
   otherwise a name key. No cross-provider person merge.
 
@@ -74,12 +77,21 @@ flowchart TD
 - No image request happens before CC0 evidence is committed for that record.
   Non-CC0 and unknown records produce no asset row, no image GET, no object
   write, and (structurally, since the table does not exist) no embedding write.
-- The only passing claim is The Met's published Open Access policy plus
-  `isPublicDomain: true` (a JSON boolean; `"yes"` is unknown). Evidence records
-  the policy URL and `verification_method = provider_policy`.
-- A restrictive rights statement (public domain mark, CC BY, copyright, and
-  similar) beats an affirmative flag. A contradiction fails closed as
-  `NON_CC0_CACHED`.
+- The only passing claim for the Met is its published Open Access policy plus
+  `isPublicDomain: true` (a JSON boolean; a non-boolean is rejected metadata).
+  That flag is trusted only because the policy says the hosted image is CC0.
+  `decide()` defaults to fail closed, so a later source cannot inherit the
+  exception. Without the trusted flag, only an explicit CC0 dedication in the
+  item's own statement admits a record.
+- Public domain is not CC0. A public-domain mark is `PUBLIC_DOMAIN_MARK` and
+  `NON_CC0_CACHED`; those bytes are never fetched. An expired copyright is a
+  country-specific conclusion, and a photograph of the work can still be
+  copyrighted. CC0 is a waiver from a rights holder.
+- A restrictive statement beats the flag: other Creative Commons licenses and
+  their URLs, a public-domain mark, copyright, permission, and personal-use
+  language. That is `NON_CC0_CACHED`. A statement that both dedicates the work
+  to CC0 and restricts it is `UNKNOWN_CACHED`. Empty or unrecognized text may
+  pass only together with the trusted flag. The original statement is kept.
 - Invalid or missing metadata is `UNKNOWN_CACHED`. Unknown rechecks after
   `INGEST_RECHECK_UNKNOWN_DAYS` (7), firm non-CC0 after
   `INGEST_RECHECK_NON_CC0_DAYS` (30). The deadline uses the database clock. Before
@@ -99,7 +111,7 @@ flowchart TD
   `originals/ab/cd/<sha256>.<ext>` and `thumbnails/ab/cd/<sha256>.webp`. The
   digest is also written as object metadata. The worker never deletes an object.
 - The asset row is inserted only after both object PUTs succeed, in the same
-  transaction that marks it `STORED`.
+  transaction that marks it `STORED` and the job `succeeded`.
 - One claimed job at a time per worker, so one in-flight source request. In
   network mode a shared `Pacer` spaces metadata and image requests at
   `INGEST_RATE_LIMIT_RPS`.
@@ -118,8 +130,16 @@ States: `pending`, `leased`, `retry_wait`, `succeeded`, `dead`.
 - `dedupe_key = ingest:{provider}:{external_id}`, unique. A repeat ingest finds
   the existing row instead of queueing a second one.
 - Claim is one `UPDATE` over a `FOR UPDATE SKIP LOCKED` candidate. It sets
-  `leased_until` and increments `attempt_count` at claim time, so a worker killed
-  mid-job still spends an attempt when its lease expires.
+  `leased_until`, issues a new `claim_token`, and increments `attempt_count` at
+  claim time, so a worker killed mid-job still spends an attempt when its lease
+  expires. A reclaim issues a different token. Every later write
+  (`succeed`, `retry_later`, `mark_dead`, payload hints, lease renewal, and the
+  catalog writes for a rights decision or an asset) matches that token, the
+  leased state, and an unexpired lease. Zero rows means the claim was lost, and
+  the stale worker does not record a terminal state. A background renewal
+  extends the lease while the token is still held, and stops at
+  `INGEST_JOB_DEADLINE_SECONDS` (900) so a stalled transfer cannot hold the job
+  forever.
 - `INGEST_MAX_ATTEMPTS = 4`: one attempt plus three retries.
 - Transient (timeout, connection error, DNS failure, 429, 5xx, object store
   unavailable) goes to `retry_wait` with exponential backoff and jitter,
@@ -127,11 +147,15 @@ States: `pending`, `leased`, `retry_wait`, `succeeded`, `dead`.
 - Permanent (other 4xx, allowlist or private-address refusal, non-image body,
   oversize, empty body, missing image URL) goes `dead` immediately without
   spending the transient budget.
-- A lease that expires on the last attempt is moved to `dead` with
-  `attempts_exhausted` by `reap_exhausted` at the start of each drain, because the
-  claim query can no longer see it.
-- A repeat ingest never clears `dead` or steals a live lease. A due negative-cache
-  recheck resets attempts on `pending`, `retry_wait`, or `succeeded` rows only.
+- A lease that expires on the last attempt is settled by `reap_exhausted` at
+  the start of each drain, because the claim query can no longer see it. If the
+  asset is already `STORED`, the job is reconciled as `succeeded`. Otherwise it
+  is moved to `dead` with `attempts_exhausted`.
+- A repeat ingest never clears `dead`, never steals a live lease, and never
+  resets `pending` or `retry_wait`. Those rows keep the attempts and the
+  `next_run_at` they already have. A due negative-cache recheck resets attempts
+  on a `succeeded` row only, and that condition is checked in the same
+  statement as the reset.
 - `redrive` is the operator action: `dead` back to `pending` with attempts reset.
   `last_error` is kept.
 
@@ -207,10 +231,6 @@ bytes.
   connection, so a DNS rebinding answer between the two is not caught. Network
   mode is opt-in and the image host allowlist still applies. Pinning the
   connection to the checked address is future work.
-- Job state updates after a run (`succeed`, `retry_later`, `mark_dead`) are keyed
-  by job id and do not re-check that this worker still holds the lease. With a
-  single worker and a 300 second lease that is not reachable in practice;
-  worker replicas would need a fencing condition.
 - The `Pacer` spaces requests within one process. Replicas would need a shared
   token bucket.
 - An HTTP-date `Retry-After` falls back to computed backoff.

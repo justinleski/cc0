@@ -10,6 +10,11 @@ attempt history instead of living in a topic that can disagree with them.
 `ingest`; M2 adds `embed` with its own dedupe key and attempt budget. There is
 no stage column: a retry reads progress from the catalog and the object store,
 because a committed stage marker can disagree with what was actually written.
+
+Claiming issues a `claim_token`, and every write a worker makes afterwards has
+to present it while the lease is still live. Without that fence a worker whose
+lease expired mid-job could overwrite the result of the worker that reclaimed
+and finished it, which no amount of attempt counting would catch.
 """
 
 import json
@@ -22,9 +27,43 @@ from sqlalchemy import Engine, text
 
 from app.db import catalog
 
-# States a repeated ingest request may reset. `leased` is in flight, and `dead`
-# waits for an explicit operator redrive.
-RESETTABLE_STATES = (catalog.JOB_PENDING, catalog.JOB_RETRY_WAIT, catalog.JOB_SUCCEEDED)
+# The only state a repeated ingest request may reset, and only for a due
+# negative-cache recheck. `leased` is in flight, `dead` waits for an explicit
+# operator redrive, and `pending`/`retry_wait` are already going to run: giving
+# those back a full attempt budget would let repeated ingest runs erase
+# backoff, Retry-After, and the attempt cap that makes a job die.
+RESETTABLE_STATES = (catalog.JOB_SUCCEEDED,)
+
+# A job the claim query can no longer see: out of attempts, and either parked
+# in retry_wait or holding a lease that has run out.
+_UNCLAIMABLE = """
+    kind = :kind
+    AND attempt_count >= max_attempts
+    AND state IN (:leased, :retry_wait)
+    AND (leased_until IS NULL OR leased_until < now())
+"""
+
+# The asset this job exists to create, reached through the same identity the
+# dedupe key is built from rather than by parsing the payload.
+_HAS_STORED_ASSET = """
+    EXISTS (
+        SELECT 1 FROM assets
+        JOIN source_records ON source_records.id = assets.source_record_id
+        JOIN providers ON providers.id = source_records.provider_id
+        WHERE assets.status = :stored
+          AND jobs.dedupe_key = :prefix || providers.name || ':' || source_records.external_id
+    )
+"""
+
+# The condition every worker write carries. Shared with the catalog store, so
+# an asset or a rights decision is committed under the same fence as the job
+# state it belongs to.
+CLAIM_HELD = """
+    id = :job_id
+    AND claim_token = :claim_token
+    AND state = :leased
+    AND leased_until > now()
+"""
 
 
 def dedupe_key(provider: str, external_id: str) -> str:
@@ -48,6 +87,19 @@ def backoff_seconds(
     return window * (0.5 + 0.5 * generator.random())
 
 
+class ClaimLost(Exception):
+    """This worker no longer holds the job it is working on.
+
+    Raised instead of writing, because the row now belongs to whoever reclaimed
+    the expired lease. The work already committed elsewhere stands, and this
+    attempt must not record a success, a retry, or a dead letter over it.
+    """
+
+    def __init__(self, job_id: UUID) -> None:
+        super().__init__(f"claim lost for job {job_id}")
+        self.job_id = job_id
+
+
 @dataclass(frozen=True)
 class ClaimedJob:
     id: UUID
@@ -56,6 +108,9 @@ class ClaimedJob:
     attempt_count: int
     max_attempts: int
     payload: dict[str, Any]
+    # Proof that this process is the one holding the lease. Every later write
+    # carries it, so a reclaimed job ignores its previous worker.
+    claim_token: UUID
 
     @property
     def attempts_exhausted(self) -> bool:
@@ -109,13 +164,15 @@ class JobStore:
             ).scalar_one_or_none()
         return created is not None
 
-    def request_run(self, dedupe: str) -> bool:
-        """Make an existing job runnable again and reset its attempt state.
+    def request_recheck_run(self, dedupe: str, source_record_id: UUID) -> bool:
+        """Re-run a finished job because its negative cache is due again.
 
-        Used when a negative-cache record is due for recheck. A `leased` row is
-        left alone because another worker holds it, and a `dead` row is left
-        alone because a failure an operator has not seen must not be cleared by
-        someone re-running ingestion.
+        The recheck condition is part of this statement rather than a prior
+        read, so a repeat ingestion cannot reset a job on a deadline that
+        passed between the two. Everything else is left exactly as it is: a
+        `retry_wait` row keeps the backoff and the attempts it has already
+        spent, a `leased` row belongs to the worker holding it, and a `dead`
+        row waits for an operator who has seen the failure.
         """
         with self._engine.begin() as connection:
             updated = connection.execute(
@@ -126,15 +183,32 @@ class JobStore:
                         attempt_count = 0,
                         next_run_at = NULL,
                         leased_until = NULL,
+                        claim_token = NULL,
                         updated_at = now()
-                    WHERE dedupe_key = :dedupe_key AND state = ANY(:resettable)
+                    WHERE dedupe_key = :dedupe_key
+                      AND state = ANY(:resettable)
+                      AND EXISTS (
+                          SELECT 1 FROM source_records
+                          WHERE source_records.id = :source_record_id
+                            AND source_records.eligibility_status = ANY(:cached)
+                            AND source_records.next_recheck_at IS NOT NULL
+                            AND source_records.next_recheck_at <= now()
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM assets
+                          WHERE assets.source_record_id = :source_record_id
+                            AND assets.status = :stored
+                      )
                     RETURNING id
                     """
                 ),
                 {
                     "dedupe_key": dedupe,
+                    "source_record_id": source_record_id,
                     "pending": catalog.JOB_PENDING,
                     "resettable": list(RESETTABLE_STATES),
+                    "cached": list(catalog.CACHED_STATUSES),
+                    "stored": catalog.ASSET_STORED,
                 },
             ).scalar_one_or_none()
         return updated is not None
@@ -150,6 +224,9 @@ class JobStore:
         The attempt counter increments here rather than on failure, so a worker
         that crashes mid-job still spends an attempt when its lease expires. A
         job that poisons the process therefore cannot be reclaimed forever.
+
+        A new token is issued on every claim, including a reclaim, so the
+        previous holder of this row can no longer write to it.
         """
         with self._engine.begin() as connection:
             row = connection.execute(
@@ -172,10 +249,12 @@ class JobStore:
                     UPDATE jobs SET
                         state = :leased,
                         leased_until = now() + make_interval(secs => :lease_seconds),
+                        claim_token = gen_random_uuid(),
                         attempt_count = attempt_count + 1,
                         updated_at = now()
                     WHERE id = (SELECT id FROM candidate)
-                    RETURNING id, kind, dedupe_key, attempt_count, max_attempts, payload
+                    RETURNING id, kind, dedupe_key, attempt_count, max_attempts,
+                              payload, claim_token
                     """
                 ),
                 {
@@ -195,78 +274,111 @@ class JobStore:
             attempt_count=row.attempt_count,
             max_attempts=row.max_attempts,
             payload=row.payload or {},
+            claim_token=row.claim_token,
         )
 
     def reap_exhausted(self, *, kind: str = catalog.JOB_KIND_INGEST) -> int:
-        """Dead-letter jobs that can no longer be claimed.
+        """Settle jobs that can no longer be claimed. Returns the dead count.
 
         A lease that expired on the last attempt would otherwise sit in `leased`
         forever, invisible to both the claim query and the operator.
+
+        Durable catalog state is read first. A job whose asset is already
+        `STORED` finished its work, so it is reconciled as succeeded rather than
+        dead-lettered into an operator's queue for a redrive that has nothing
+        left to do.
         """
         with self._engine.begin() as connection:
+            settled = {
+                "kind": kind,
+                "leased": catalog.JOB_LEASED,
+                "retry_wait": catalog.JOB_RETRY_WAIT,
+                "stored": catalog.ASSET_STORED,
+                "prefix": f"{kind}:",
+            }
+            connection.execute(
+                text(
+                    f"""
+                    UPDATE jobs SET
+                        state = :succeeded,
+                        leased_until = NULL,
+                        claim_token = NULL,
+                        next_run_at = NULL,
+                        updated_at = now()
+                    WHERE {_UNCLAIMABLE} AND {_HAS_STORED_ASSET}
+                    """
+                ),
+                {**settled, "succeeded": catalog.JOB_SUCCEEDED},
+            )
             result = connection.execute(
                 text(
-                    """
+                    f"""
                     UPDATE jobs SET
                         state = :dead,
                         dead_at = now(),
                         leased_until = NULL,
+                        claim_token = NULL,
                         last_error = COALESCE(last_error, :reason),
                         updated_at = now()
-                    WHERE kind = :kind
-                      AND attempt_count >= max_attempts
-                      AND state IN (:leased, :retry_wait)
-                      AND (leased_until IS NULL OR leased_until < now())
+                    WHERE {_UNCLAIMABLE}
                     """
                 ),
-                {
-                    "kind": kind,
-                    "dead": catalog.JOB_DEAD,
-                    "leased": catalog.JOB_LEASED,
-                    "retry_wait": catalog.JOB_RETRY_WAIT,
-                    "reason": "attempts_exhausted",
-                },
+                {**settled, "dead": catalog.JOB_DEAD, "reason": "attempts_exhausted"},
             )
         return result.rowcount
 
-    def succeed(self, job_id: UUID) -> None:
-        self._set_state(
-            job_id,
+    def succeed(self, job: ClaimedJob) -> bool:
+        return self._fenced(
+            job,
             """
-            state = :state, leased_until = NULL, next_run_at = NULL,
-            last_error = NULL, updated_at = now()
+            state = :state, leased_until = NULL, claim_token = NULL,
+            next_run_at = NULL, last_error = NULL, updated_at = now()
             """,
             {"state": catalog.JOB_SUCCEEDED},
         )
 
-    def retry_later(self, job_id: UUID, reason: str, delay_seconds: float) -> None:
-        self._set_state(
-            job_id,
+    def retry_later(self, job: ClaimedJob, reason: str, delay_seconds: float) -> bool:
+        return self._fenced(
+            job,
             """
-            state = :state, leased_until = NULL,
+            state = :state, leased_until = NULL, claim_token = NULL,
             next_run_at = now() + make_interval(secs => :delay),
             last_error = :reason, updated_at = now()
             """,
             {"state": catalog.JOB_RETRY_WAIT, "delay": delay_seconds, "reason": reason},
         )
 
-    def mark_dead(self, job_id: UUID, reason: str) -> None:
+    def mark_dead(self, job: ClaimedJob, reason: str) -> bool:
         """Terminal. Nothing retries this row until an operator redrives it."""
-        self._set_state(
-            job_id,
+        return self._fenced(
+            job,
             """
             state = :state, dead_at = now(), leased_until = NULL,
-            next_run_at = NULL, last_error = :reason, updated_at = now()
+            claim_token = NULL, next_run_at = NULL, last_error = :reason,
+            updated_at = now()
             """,
             {"state": catalog.JOB_DEAD, "reason": reason},
         )
 
-    def merge_payload(self, job_id: UUID, patch: dict[str, Any]) -> None:
+    def merge_payload(self, job: ClaimedJob, patch: dict[str, Any]) -> bool:
         """Record a hint for the next attempt. Hints are verified, not trusted."""
-        self._set_state(
-            job_id,
+        return self._fenced(
+            job,
             "payload = payload || CAST(:patch AS jsonb), updated_at = now()",
             {"patch": _json(patch)},
+        )
+
+    def renew_lease(self, job: ClaimedJob, lease_seconds: int) -> bool:
+        """Push the deadline out while this worker is still holding the claim.
+
+        Renewal cannot revive a lost claim: the fence below already requires an
+        unexpired lease, so a token that was reclaimed or allowed to expire
+        stays dead.
+        """
+        return self._fenced(
+            job,
+            "leased_until = now() + make_interval(secs => :lease_seconds), updated_at = now()",
+            {"lease_seconds": lease_seconds},
         )
 
     def redrive(self, dedupe: str) -> bool:
@@ -285,6 +397,7 @@ class JobStore:
                         dead_at = NULL,
                         next_run_at = NULL,
                         leased_until = NULL,
+                        claim_token = NULL,
                         updated_at = now()
                     WHERE dedupe_key = :dedupe_key AND state = :dead
                     RETURNING id
@@ -325,12 +438,23 @@ class JobStore:
             ).all()
         return [_job_row(row) for row in rows]
 
-    def _set_state(self, job_id: UUID, assignments: str, params: dict[str, Any]) -> None:
+    def _fenced(self, job: ClaimedJob, assignments: str, params: dict[str, Any]) -> bool:
+        """Write only while this claim is still the live lease on the row.
+
+        False means the lease expired and someone else took the job. The caller
+        decides what to do with that; what it must not do is write anyway.
+        """
         with self._engine.begin() as connection:
-            connection.execute(
-                text(f"UPDATE jobs SET {assignments} WHERE id = :id"),
-                {"id": job_id, **params},
-            )
+            updated = connection.execute(
+                text(f"UPDATE jobs SET {assignments} WHERE {CLAIM_HELD} RETURNING id"),
+                {
+                    "job_id": job.id,
+                    "claim_token": job.claim_token,
+                    "leased": catalog.JOB_LEASED,
+                    **params,
+                },
+            ).scalar_one_or_none()
+        return updated is not None
 
 
 def _job_row(row: Any) -> JobRow:

@@ -16,7 +16,13 @@ from typing import Any
 
 from app.ingestion import met
 from app.ingestion.errors import PermanentFailure
-from app.ingestion.fetch import FetchedImage, classify_status, validate_url, verify_content_type
+from app.ingestion.fetch import (
+    FetchedImage,
+    Guard,
+    classify_status,
+    validate_url,
+    verify_content_type,
+)
 
 CATALOG_FILE = "catalog.json"
 OBJECTS_DIR = "objects"
@@ -58,8 +64,10 @@ class FixtureSource:
             return self._read_json(self.root / OBJECTS_DIR / f"{external_id}.json")
         raise PermanentFailure("fixture_missing", "unrecorded metadata url")
 
-    def fetch(self, url: str) -> FetchedImage:
+    def fetch(self, url: str, *, guard: Guard | None = None) -> FetchedImage:
         target = validate_url(url, self.image_hosts, what="image")
+        if guard is not None:
+            guard()
         self.requests.append((IMAGE_REQUEST, target))
         entry = self._manifest().get(target)
         if entry is None:
