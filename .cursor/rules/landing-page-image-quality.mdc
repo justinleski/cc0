@@ -1,6 +1,5 @@
 ---
-description: "Cursor rules for avoiding placeholder or broken image URLs, using stable visual assets, and checking alt text, dimensions, licensing, and responsive behavior."
-globs: **/*
+globs: frontend/**
 alwaysApply: false
 ---
 # Landing Page Image Quality

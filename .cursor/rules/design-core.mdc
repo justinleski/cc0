@@ -1,6 +1,7 @@
 ---
 description: Balanced always-on core of UX, UI, IA, and accessibility principles for every interaction.
-alwaysApply: true
+alwaysApply: false
+globs: frontend/**
 category: core
 tags: [ux, ui, ia, accessibility]
 ---
