@@ -1,0 +1,28 @@
+{
+  "GalleryNumber": "634",
+  "artistDisplayName": "Hokusai Katsushika",
+  "artistULAN_URL": "http://vocab.getty.edu/page/ulan/500007311",
+  "artistWikidata_URL": "",
+  "city": "Edo",
+  "classification": "Paintings",
+  "constituents": null,
+  "country": "Japan",
+  "department": "European Paintings",
+  "isPublicDomain": true,
+  "measurements": [
+    {
+      "elementDescription": null,
+      "elementName": "Overall"
+    }
+  ],
+  "medium": "Woodblock print",
+  "objectBeginDate": 1831,
+  "objectDate": "1831",
+  "objectEndDate": 1831,
+  "objectID": 100002,
+  "objectURL": "https://www.metmuseum.org/art/collection/search/100002",
+  "primaryImage": "https://images.metmuseum.org/CRDImages/cc0/100002.jpg",
+  "primaryImageSmall": "",
+  "rightsAndReproduction": "",
+  "title": "Study of Reeds"
+}

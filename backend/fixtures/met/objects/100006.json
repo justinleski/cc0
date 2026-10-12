@@ -1,0 +1,28 @@
+{
+  "GalleryNumber": "634",
+  "artistDisplayName": "Paul Revere",
+  "artistULAN_URL": "http://vocab.getty.edu/page/ulan/500026270",
+  "artistWikidata_URL": "",
+  "city": "Boston",
+  "classification": "Paintings",
+  "constituents": null,
+  "country": "United States",
+  "department": "European Paintings",
+  "isPublicDomain": true,
+  "measurements": [
+    {
+      "elementDescription": null,
+      "elementName": "Overall"
+    }
+  ],
+  "medium": "Oil on canvas",
+  "objectBeginDate": 1775,
+  "objectDate": "1775",
+  "objectEndDate": 1780,
+  "objectID": 100006,
+  "objectURL": "https://www.metmuseum.org/art/collection/search/100006",
+  "primaryImage": "https://images.metmuseum.org/CRDImages/cc0/100006.jpg",
+  "primaryImageSmall": "",
+  "rightsAndReproduction": "",
+  "title": "Silver Teapot"
+}

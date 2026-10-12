@@ -1,0 +1,28 @@
+{
+  "GalleryNumber": "634",
+  "artistDisplayName": "Living Artist",
+  "artistULAN_URL": "",
+  "artistWikidata_URL": "",
+  "city": "",
+  "classification": "Paintings",
+  "constituents": null,
+  "country": "",
+  "department": "European Paintings",
+  "isPublicDomain": false,
+  "measurements": [
+    {
+      "elementDescription": null,
+      "elementName": "Overall"
+    }
+  ],
+  "medium": "Oil on canvas",
+  "objectBeginDate": 0,
+  "objectDate": "",
+  "objectEndDate": 0,
+  "objectID": 200001,
+  "objectURL": "https://www.metmuseum.org/art/collection/search/200001",
+  "primaryImage": "https://images.metmuseum.org/CRDImages/cc0/200001.jpg",
+  "primaryImageSmall": "",
+  "rightsAndReproduction": "Rights reserved by the artist",
+  "title": "Contemporary Study"
+}

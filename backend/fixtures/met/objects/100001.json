@@ -1,0 +1,28 @@
+{
+  "GalleryNumber": "634",
+  "artistDisplayName": "Hokusai Katsushika",
+  "artistULAN_URL": "http://vocab.getty.edu/page/ulan/500007311",
+  "artistWikidata_URL": "",
+  "city": "Edo",
+  "classification": "Paintings",
+  "constituents": null,
+  "country": "Japan",
+  "department": "European Paintings",
+  "isPublicDomain": true,
+  "measurements": [
+    {
+      "elementDescription": null,
+      "elementName": "Overall"
+    }
+  ],
+  "medium": "Woodblock print",
+  "objectBeginDate": 1830,
+  "objectDate": "1830",
+  "objectEndDate": 1832,
+  "objectID": 100001,
+  "objectURL": "https://www.metmuseum.org/art/collection/search/100001",
+  "primaryImage": "https://images.metmuseum.org/CRDImages/cc0/100001.jpg",
+  "primaryImageSmall": "",
+  "rightsAndReproduction": "",
+  "title": "Harbor at Dawn"
+}

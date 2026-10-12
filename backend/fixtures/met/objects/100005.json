@@ -1,0 +1,28 @@
+{
+  "GalleryNumber": "634",
+  "artistDisplayName": "Unknown",
+  "artistULAN_URL": "",
+  "artistWikidata_URL": "",
+  "city": "Delft",
+  "classification": "Paintings",
+  "constituents": null,
+  "country": "Netherlands",
+  "department": "European Paintings",
+  "isPublicDomain": true,
+  "measurements": [
+    {
+      "elementDescription": null,
+      "elementName": "Overall"
+    }
+  ],
+  "medium": "Oil on canvas",
+  "objectBeginDate": 1640,
+  "objectDate": "1640",
+  "objectEndDate": 1650,
+  "objectID": 100005,
+  "objectURL": "https://www.metmuseum.org/art/collection/search/100005",
+  "primaryImage": "https://images.metmuseum.org/CRDImages/cc0/100005.jpg",
+  "primaryImageSmall": "",
+  "rightsAndReproduction": "",
+  "title": "Portrait of a Clerk"
+}

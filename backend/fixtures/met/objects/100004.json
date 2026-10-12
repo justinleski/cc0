@@ -1,0 +1,28 @@
+{
+  "GalleryNumber": "634",
+  "artistDisplayName": "Vincent van Gogh",
+  "artistULAN_URL": "http://vocab.getty.edu/page/ulan/500115588",
+  "artistWikidata_URL": "",
+  "city": "Arles",
+  "classification": "Paintings",
+  "constituents": null,
+  "country": "France",
+  "department": "European Paintings",
+  "isPublicDomain": true,
+  "measurements": [
+    {
+      "elementDescription": null,
+      "elementName": "Overall"
+    }
+  ],
+  "medium": "Oil on canvas",
+  "objectBeginDate": 1889,
+  "objectDate": "1889",
+  "objectEndDate": 1889,
+  "objectID": 100004,
+  "objectURL": "https://www.metmuseum.org/art/collection/search/100004",
+  "primaryImage": "https://images.metmuseum.org/CRDImages/cc0/100004.jpg",
+  "primaryImageSmall": "",
+  "rightsAndReproduction": "",
+  "title": "Field in Late Summer"
+}

@@ -1,0 +1,28 @@
+{
+  "GalleryNumber": "634",
+  "artistDisplayName": "",
+  "artistULAN_URL": "",
+  "artistWikidata_URL": "",
+  "city": "Chancay",
+  "classification": "Paintings",
+  "constituents": null,
+  "country": "Peru",
+  "department": "European Paintings",
+  "isPublicDomain": true,
+  "measurements": [
+    {
+      "elementDescription": null,
+      "elementName": "Overall"
+    }
+  ],
+  "medium": "Oil on canvas",
+  "objectBeginDate": 1500,
+  "objectDate": "1500",
+  "objectEndDate": 1550,
+  "objectID": 100008,
+  "objectURL": "https://www.metmuseum.org/art/collection/search/100008",
+  "primaryImage": "https://images.metmuseum.org/CRDImages/cc0/100008.jpg",
+  "primaryImageSmall": "",
+  "rightsAndReproduction": "",
+  "title": "Woven Cotton Panel"
+}

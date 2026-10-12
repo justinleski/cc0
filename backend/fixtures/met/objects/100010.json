@@ -1,0 +1,28 @@
+{
+  "GalleryNumber": "634",
+  "artistDisplayName": "Edgar Degas",
+  "artistULAN_URL": "http://vocab.getty.edu/page/ulan/500115507",
+  "artistWikidata_URL": "",
+  "city": "Paris",
+  "classification": "Paintings",
+  "constituents": null,
+  "country": "France",
+  "department": "European Paintings",
+  "isPublicDomain": true,
+  "measurements": [
+    {
+      "elementDescription": null,
+      "elementName": "Overall"
+    }
+  ],
+  "medium": "Oil on canvas",
+  "objectBeginDate": 1879,
+  "objectDate": "1879",
+  "objectEndDate": 1881,
+  "objectID": 100010,
+  "objectURL": "https://www.metmuseum.org/art/collection/search/100010",
+  "primaryImage": "https://images.metmuseum.org/CRDImages/cc0/100010.jpg",
+  "primaryImageSmall": "",
+  "rightsAndReproduction": "",
+  "title": "Dancer Resting"
+}
