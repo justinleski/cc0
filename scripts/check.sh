@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M0 acceptance check. Run from the repository root: ./scripts/check.sh
+# M0 and M1 acceptance check. Run from the repository root: ./scripts/check.sh
 #
 # Lint and unit tests run first so a code failure does not wait on container
 # images. Everything after that needs the local data services and fails when
