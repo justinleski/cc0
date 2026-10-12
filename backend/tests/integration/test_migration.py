@@ -11,13 +11,14 @@ from alembic.config import Config
 from psycopg import sql
 
 from app.core.config import Settings
-from app.db import roles
+from app.db import catalog, roles
 from app.db.roles import ROLE_API, ROLE_MIGRATOR, ROLE_NAMES, ROLE_WORKER, ensure_login_sql
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 _REVISION_FILES = (
     "0001_enable_vector_and_roles.py",
     "0002_default_privileges.py",
+    "0003_catalog.py",
 )
 
 
@@ -53,6 +54,7 @@ def _isolate_role_names(monkeypatch: pytest.MonkeyPatch, suffix: str) -> tuple[s
     for module_name in (
         "migrations.versions.0001_enable_vector_and_roles",
         "migrations.versions.0002_default_privileges",
+        "migrations.versions.0003_catalog",
     ):
         if module_name not in sys.modules:
             importlib.import_module(module_name)
@@ -161,7 +163,9 @@ def _assert_migrated(url: str, passwords: dict[str, str]) -> None:
         }
 
     assert extension is not None
-    assert tables == {"alembic_version"}
+    assert set(catalog.TABLES) < tables
+    # Later milestones own these. The catalog revision must not create them.
+    assert {"asset_embeddings", "boards", "board_items", "exports", "users"} & tables == set()
     assert set(roles) == set(ROLE_NAMES)
     for can_login, is_super, can_create_db, can_create_role in roles.values():
         assert can_login is True
@@ -181,6 +185,22 @@ def _assert_migrated(url: str, passwords: dict[str, str]) -> None:
         connection.execute("CREATE TABLE migrator_probe (id int)")
         connection.execute("DROP TABLE migrator_probe")
 
+    _assert_no_default_privileges(url, base, database, passwords)
+    _assert_catalog_grants(url)
+
+
+def _assert_no_default_privileges(
+    url: str,
+    base: str,
+    database: str,
+    passwords: dict[str, str],
+) -> None:
+    """The M0 blanket grant is gone, for both migration creators.
+
+    Leaving it in place would copy SELECT/INSERT/UPDATE/DELETE onto every table
+    a later milestone adds, which is exactly the privilege question the catalog
+    revision is supposed to answer per table.
+    """
     for creator_url in (url, _role_url(base, ROLE_MIGRATOR, passwords[ROLE_MIGRATOR], database)):
         with psycopg.connect(creator_url) as connection:
             connection.execute("CREATE TABLE grants_probe (id serial PRIMARY KEY, value int)")
@@ -189,10 +209,33 @@ def _assert_migrated(url: str, passwords: dict[str, str]) -> None:
                 with psycopg.connect(
                     _role_url(base, role, passwords[role], database)
                 ) as connection:
-                    connection.execute("INSERT INTO grants_probe (value) VALUES (1)")
-                    assert connection.execute("SELECT value FROM grants_probe").fetchone() == (1,)
-                    connection.execute("UPDATE grants_probe SET value = 2")
-                    connection.execute("DELETE FROM grants_probe")
+                    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                        connection.execute("SELECT value FROM grants_probe")
         finally:
             with psycopg.connect(creator_url) as connection:
                 connection.execute("DROP TABLE grants_probe")
+
+
+def _assert_catalog_grants(url: str) -> None:
+    """Per-table privileges: the worker writes the catalog, the API reads two tables."""
+    writable = ("SELECT", "INSERT", "UPDATE")
+    with psycopg.connect(url) as connection:
+
+        def granted(role: str, table: str, privilege: str) -> bool:
+            return connection.execute(
+                "SELECT has_table_privilege(%s, %s, %s)", (role, table, privilege)
+            ).fetchone()[0]
+
+        for table in catalog.TABLES:
+            for privilege in writable:
+                assert granted(ROLE_WORKER, table, privilege), f"{table}.{privilege}"
+            # No DELETE anywhere: a dead job and its rights evidence have to
+            # survive for an operator to inspect.
+            assert not granted(ROLE_WORKER, table, "DELETE"), table
+
+            readable = table in ("creators", "assets")
+            assert granted(ROLE_API, table, "SELECT") is readable, table
+            # The API cannot rewrite a rights decision or a job, and cannot see
+            # providers, source records, evidence, or jobs at all.
+            for privilege in ("INSERT", "UPDATE", "DELETE"):
+                assert not granted(ROLE_API, table, privilege), f"{table}.{privilege}"

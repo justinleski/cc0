@@ -118,23 +118,54 @@ def test_readiness_logs_cause_class_not_message(monkeypatch, caplog):
     assert "secret-db-password" not in caplog.text
 
 
-def test_engine_connect_timeout_floors_at_one_second_without_statement_timeout():
-    from app.integrations.readiness import create_db_engine
+def _connect_args(engine) -> dict:
+    # SQLAlchemy keeps connect_args on the pool creator, not on Engine.
+    return next(
+        cell.cell_contents
+        for cell in engine.pool._creator.__closure__
+        if isinstance(cell.cell_contents, dict) and "connect_timeout" in cell.cell_contents
+    )
 
-    engine = create_db_engine(_settings(readiness_timeout_seconds=0.2))
+
+def test_api_and_worker_pools_are_separate_and_carry_no_statement_timeout():
+    from app.db.engine import (
+        API_MAX_OVERFLOW,
+        API_POOL_SIZE,
+        CONNECT_TIMEOUT_SECONDS,
+        POOL_CHECKOUT_TIMEOUT_SECONDS,
+        WORKER_MAX_OVERFLOW,
+        WORKER_POOL_SIZE,
+        create_api_engine,
+        create_worker_engine,
+    )
+
+    settings = _settings(
+        readiness_timeout_seconds=0.2,
+        worker_database_url="postgresql://cc0_worker:secret-worker@127.0.0.1:5432/cc0",
+    )
+    api = create_api_engine(settings)
+    worker = create_worker_engine(settings)
     try:
-        # SQLAlchemy keeps connect_args on the pool creator, not on Engine.
-        kwargs = next(
-            cell.cell_contents
-            for cell in engine.pool._creator.__closure__
-            if isinstance(cell.cell_contents, dict) and "connect_timeout" in cell.cell_contents
+        assert (api.pool.size(), api.pool._max_overflow) == (API_POOL_SIZE, API_MAX_OVERFLOW)
+        assert (worker.pool.size(), worker.pool._max_overflow) == (
+            WORKER_POOL_SIZE,
+            WORKER_MAX_OVERFLOW,
         )
-        assert kwargs["connect_timeout"] == 1
-        assert "options" not in kwargs
-        assert "statement_timeout" not in kwargs
-        assert engine.pool.timeout() == 0.2
+        # Each process has its own login, so the pools cannot be swapped.
+        assert api.url.username == "cc0_api"
+        assert worker.url.username == "cc0_worker"
+        for engine in (api, worker):
+            kwargs = _connect_args(engine)
+            assert kwargs["connect_timeout"] == CONNECT_TIMEOUT_SECONDS
+            # A connection-level statement_timeout would outlive the readiness
+            # probe that wants it and apply to later request work.
+            assert "options" not in kwargs
+            assert "statement_timeout" not in kwargs
+            # The checkout budget is a request budget, not the readiness budget.
+            assert engine.pool.timeout() == POOL_CHECKOUT_TIMEOUT_SECONDS
     finally:
-        engine.dispose()
+        api.dispose()
+        worker.dispose()
 
 
 def test_lifespan_reuses_and_closes_resources(monkeypatch):
@@ -142,7 +173,7 @@ def test_lifespan_reuses_and_closes_resources(monkeypatch):
 
     engine, s3 = Mock(), Mock()
     build_engine, build_s3 = Mock(return_value=engine), Mock(return_value=s3)
-    monkeypatch.setattr("app.main.create_db_engine", build_engine)
+    monkeypatch.setattr("app.main.create_api_engine", build_engine)
     monkeypatch.setattr("app.main.create_s3_client", build_s3)
     postgres, store = Mock(), Mock()
     monkeypatch.setattr("app.api.health.check_postgres", postgres)
@@ -151,7 +182,7 @@ def test_lifespan_reuses_and_closes_resources(monkeypatch):
     with TestClient(create_app(settings)) as client:
         client.get("/api/v1/ready")
         client.get("/api/v1/ready")
-        postgres.assert_called_with(engine)
+        postgres.assert_called_with(engine, settings.readiness_timeout_seconds)
         store.assert_called_with(s3, settings.object_store_bucket)
         engine.dispose.assert_not_called()
     build_engine.assert_called_once_with(settings)
