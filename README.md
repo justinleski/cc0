@@ -1,9 +1,10 @@
 # cc0
 
 Local-first CC0 visual boards: discover open images and collect them into visual
-boards. M0 is implemented: Postgres with pgvector, RustFS, migrations, and a
-FastAPI health/readiness API. The frontend browses a mock catalog; ingestion,
-search, and persistent boards are future milestones.
+boards. M0 and M1 are implemented: Postgres with pgvector, RustFS, migrations,
+a FastAPI health/readiness API, and an ingestion worker that stores explicitly
+CC0 records with their rights evidence. The frontend browses a mock catalog;
+search and persistent boards are future milestones.
 
 ## Start locally
 
@@ -29,6 +30,16 @@ In another terminal:
 curl -sS http://127.0.0.1:8000/api/v1/health
 curl -sS http://127.0.0.1:8000/api/v1/ready
 ```
+
+Ingest the recorded Met fixtures (no network access needed):
+
+```bash
+(cd backend && .venv/bin/python -m app.worker ingest)
+(cd backend && .venv/bin/python -m app.worker jobs --state dead)
+```
+
+The first run stores 10 assets and dead-letters 3 refused fixtures by design, so
+it exits 1. See [ingestion](docs/systems/ingestion.md).
 
 Open http://127.0.0.1:3000. Run `./scripts/check.sh` for the full acceptance check.
 Use `docker compose stop` to stop services and preserve data.
