@@ -1,6 +1,7 @@
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
@@ -50,6 +51,7 @@ CONFIG_ENV_PREFIXES = (
     "CC0_",
     "OBJECT_STORE_",
     "READINESS_",
+    "INGEST_",
     "POSTGRES_",
     "RUSTFS_",
     "S3_",
@@ -168,6 +170,50 @@ class Settings(BaseSettings):
     object_store_secret_key: str = "cc0rustfs_local_password"
     object_store_region: str = "us-east-1"
     readiness_timeout_seconds: float = Field(default=2.0, gt=0)
+
+    # Ingestion. Protective limits, not provider claims: the defaults are the
+    # pilot values from the spec and an operator may only lower them safely.
+    # `fixture` replays recorded responses and opens no socket, which is why
+    # tests and CI need no network or API key. `network` is opt-in.
+    ingest_source_mode: Literal["fixture", "network"] = "fixture"
+    ingest_fixture_dir: str = "backend/fixtures/met"
+    ingest_batch_limit: int = Field(default=100, gt=0)
+    ingest_rate_limit_rps: float = Field(default=1.0, gt=0)
+    ingest_request_timeout_seconds: float = Field(default=10.0, gt=0)
+    ingest_max_image_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
+    ingest_max_redirects: int = Field(default=3, ge=0)
+    ingest_max_image_pixels: int = Field(default=50_000_000, gt=0)
+    ingest_thumbnail_max_pixels: int = Field(default=512, gt=0)
+    # One initial attempt plus three retries.
+    ingest_max_attempts: int = Field(default=4, gt=0)
+    ingest_backoff_base_seconds: float = Field(default=2.0, gt=0)
+    ingest_backoff_max_seconds: float = Field(default=300.0, gt=0)
+    ingest_lease_seconds: int = Field(default=300, gt=0)
+    # Negative-cache recheck policy. Unknown is revisited sooner than a firm
+    # non-CC0 answer because it is the status most likely to be wrong.
+    ingest_recheck_unknown_days: int = Field(default=7, gt=0)
+    ingest_recheck_non_cc0_days: int = Field(default=30, gt=0)
+    # Comma-separated host allowlists. Metadata and image bytes are separate:
+    # only an explicitly verified CC0 record ever reaches an image host.
+    ingest_metadata_hosts: str = "collectionapi.metmuseum.org"
+    ingest_image_hosts: str = "images.metmuseum.org"
+
+    @property
+    def fixture_dir(self) -> Path:
+        path = Path(self.ingest_fixture_dir)
+        return path if path.is_absolute() else REPO_ROOT / path
+
+    @property
+    def metadata_host_allowlist(self) -> frozenset[str]:
+        return _host_set(self.ingest_metadata_hosts)
+
+    @property
+    def image_host_allowlist(self) -> frozenset[str]:
+        return _host_set(self.ingest_image_hosts)
+
+
+def _host_set(value: str) -> frozenset[str]:
+    return frozenset(host.strip().lower() for host in value.split(",") if host.strip())
 
 
 @lru_cache
