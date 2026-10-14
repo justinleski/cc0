@@ -29,7 +29,8 @@ localhost default when a name is misspelled. A variable is rejected when its
 name, compared case-insensitively, is not a Settings field, not on the Compose
 allowlist, and not the ignored `DATABASE_PASSWORD`, and it starts with one of:
 `APP_`, `DATABASE`, `MIGRATION_`, `WORKER_`, `CC0_`, `OBJECT_STORE_`,
-`READINESS_`, `INGEST_`, `POSTGRES_`, `RUSTFS_`, `S3_`, `API_`. `DATABASE` has no trailing
+`READINESS_`, `INGEST_`, `EMBEDDING_`, `MODEL_`, `POSTGRES_`, `RUSTFS_`, `S3_`,
+`API_`. `DATABASE` has no trailing
 underscore, so `DATABASE_URLL` is rejected and `DATABASE_URL` is kept.
 Unrelated names (`PATH`, `HOME`, `GITHUB_*`, npm variables) do not use those
 prefixes and stay allowed. Only names that are actually set are considered.
@@ -67,7 +68,8 @@ creates roles and extensions. `cc0_migrator` has schema `USAGE, CREATE`;
 `cc0_api` and `cc0_worker` have `USAGE` and cannot create tables. Revision 0002
 set broad M0 defaults for future tables; revision 0003 revokes them and grants
 per table instead. The worker can read and write the six catalog tables but not
-delete from them, and the API can read only `creators` and `assets`. See
+delete from them. It can insert embeddings and cannot update them. The API can
+read `creators`, `assets`, `asset_embeddings`, and the `ready_assets` view. See
 [ADR-0003](decisions/0003-database-roles.md) and [storage](systems/storage.md).
 
 Re-executing 0001 while a role already exists preserves that role's password and

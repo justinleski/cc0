@@ -13,8 +13,10 @@ in order. The rights gate reads item metadata and decides whether the item is
 explicitly CC0; anything else becomes a metadata-only negative cache row and
 nothing else happens. Only after CC0 evidence is written does the fetch gate
 request image bytes, under a host allowlist and hard limits. A stored asset
-stops at `STORED` (original, thumbnail, SHA-256, evidence); `READY` waits for
-embeddings in M2. Nothing in M1 is visible to users.
+stops at `STORED` (original, thumbnail, SHA-256, evidence). A separate `embed`
+job sets `READY` after the vector commits. Public search reads
+`ready_assets`: status `READY` and the latest evidence row verified CC0. See
+[search](search.md).
 
 Tests and the default local run replay recorded fixtures from
 [backend/fixtures/met](../../backend/fixtures/met) and open no socket.
@@ -36,7 +38,8 @@ flowchart TD
   EVID -->|"yes"| FETCH
   CC0 --> FETCH["fetch gate: image GET with caps"]
   FETCH --> PUT["PUT original + thumbnail to RustFS"]
-  PUT --> STORE["insert asset STORED, job succeeded"]
+  PUT --> STORE["insert asset STORED, enqueue embed, ingest succeeded"]
+  STORE --> EMBED["embed job reads RustFS, then READY"]
   FETCH -->|"transient"| RETRY["retry_wait with backoff"]
   FETCH -->|"permanent or exhausted"| DEAD["jobs.state = dead"]
   RETRY --> CLAIM
@@ -76,7 +79,7 @@ flowchart TD
 
 - No image request happens before CC0 evidence is committed for that record.
   Non-CC0 and unknown records produce no asset row, no image GET, no object
-  write, and (structurally, since the table does not exist) no embedding write.
+  write, and no embedding row. An embed job is inserted only with the asset.
 - The only passing claim for the Met is its published Open Access policy plus
   `isPublicDomain: true` (a JSON boolean; a non-boolean is rejected metadata).
   That flag is trusted only because the policy says the hosted image is CC0.
@@ -111,7 +114,13 @@ flowchart TD
   `originals/ab/cd/<sha256>.<ext>` and `thumbnails/ab/cd/<sha256>.webp`. The
   digest is also written as object metadata. The worker never deletes an object.
 - The asset row is inserted only after both object PUTs succeed, in the same
-  transaction that marks it `STORED` and the job `succeeded`.
+  transaction that marks it `STORED`, enqueues the embed job, and marks the
+  ingest job `succeeded`.
+- A record that already has bytes (`STORED`, `READY`, or `SUPPRESSED`) is not
+  sent back through the rights gate. `CatalogStore.record_superseding_rights`
+  appends a later decision and, when that decision is not verified CC0, sets
+  the asset `SUPPRESSED` in the same transaction. Public queries use the latest
+  evidence row and the status together. See [search](search.md).
 - One claimed job at a time per worker, so one in-flight source request. In
   network mode a shared `Pacer` spaces metadata and image requests at
   `INGEST_RATE_LIMIT_RPS`.
@@ -149,8 +158,10 @@ States: `pending`, `leased`, `retry_wait`, `succeeded`, `dead`.
   spending the transient budget.
 - A lease that expires on the last attempt is settled by `reap_exhausted` at
   the start of each drain, because the claim query can no longer see it. If the
-  asset is already `STORED`, the job is reconciled as `succeeded`. Otherwise it
-  is moved to `dead` with `attempts_exhausted`.
+  asset already has bytes (`STORED`, `READY`, or `SUPPRESSED`), the job is
+  reconciled as `succeeded`. An exhausted embed job is reconciled as
+  `succeeded` when its vector row exists, and `dead` otherwise. A missing asset
+  moves the ingest job to `dead` with `attempts_exhausted`.
 - A repeat ingest never clears `dead`, never steals a live lease, and never
   resets `pending` or `retry_wait`. Those rows keep the attempts and the
   `next_run_at` they already have. A due negative-cache recheck resets attempts
@@ -159,16 +170,22 @@ States: `pending`, `leased`, `retry_wait`, `succeeded`, `dead`.
 - `redrive` is the operator action: `dead` back to `pending` with attempts reset.
   `last_error` is kept.
 
-`jobs.kind` is the unit of independent retry. M1 has only `ingest`. Embeddings
-will be a separate `embed` kind with its own key and budget, so a model failure
-cannot re-lease the image download.
+`jobs.kind` is the unit of independent retry. `ingest` downloads.
+`embed:{model_key}:{model_version}:{asset_id}` encodes, with its own attempt
+budget, so a model failure cannot re-lease the image download. The identity
+in that key is the loaded provider's: OpenCLIP uses `MODEL_KEY` and
+`MODEL_VERSION`, and the fake provider uses `fake` / `deterministic-v1`. The
+embed row is inserted in the same transaction as the asset. An embed claim
+matches payload `model_key` and `model_version` to that loaded identity.
+Ingest claims are not filtered by model.
 
 ## Resume without a second download
 
 There is no stage column. Progress is read from durable state on every attempt:
 
 - Fresh negative cache: return, no request.
-- Asset already `STORED`: mark the job succeeded.
+- Asset already has bytes (`STORED`, `READY`, or `SUPPRESSED`): mark the job
+  succeeded and do not download again.
 - `ELIGIBLE_CC0` with verified CC0 evidence and no recheck due: skip the
   metadata request and rebuild asset fields from stored `raw_metadata`.
 - After both PUTs the job payload records `stored` (digest, keys, type,
@@ -184,9 +201,10 @@ only; skip logic never trusts it.
 Run from `backend/`, with the stack up and migrations applied:
 
 ```bash
-.venv/bin/python -m app.worker ingest                 # discover, queue, run
+.venv/bin/python -m app.worker ingest                 # discover, queue, ingest, embed
 .venv/bin/python -m app.worker ingest --object-id 100001
-.venv/bin/python -m app.worker drain                  # run queued jobs only
+.venv/bin/python -m app.worker drain                  # queued ingest, then embed
+.venv/bin/python -m app.worker reembed                # assets missing the active model
 .venv/bin/python -m app.worker jobs --state dead      # inspect dead letters
 .venv/bin/python -m app.worker redrive --dedupe-key ingest:met:400001
 .venv/bin/python -m app.worker redrive --all-dead

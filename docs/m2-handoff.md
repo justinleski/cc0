@@ -1,13 +1,12 @@
 # M2 engineering handoff
 
-Status: Partly implemented. Pooling, the environment rule, and the grants for
-the six M1 catalog tables shipped with M1. Grants for `asset_embeddings`,
-`asset_relations`, `users`, `boards`, `board_items`, and `exports` are still
-required when those tables are created.
+Status: Pooling, the environment rule, the M1 catalog grants, and the
+`asset_embeddings` grants are implemented. `asset_relations` is not created.
+Grants for `users`, `boards`, `board_items`, and `exports` are still required
+when those tables are created.
 
-The rows in the grant table below that name M2+ tables describe tables that do
-not exist yet. For what is running, see [storage](systems/storage.md) and
-[ingestion](systems/ingestion.md).
+For what is running, see [storage](systems/storage.md),
+[ingestion](systems/ingestion.md), and [search](systems/search.md).
 
 ## 1. Database connection pooling
 
@@ -82,11 +81,19 @@ the integration test that already logs in as each role. `cc0_api` and
 
 | Table | `cc0_api` | `cc0_worker` |
 |---|---|---|
-| `creators`, `assets`, `asset_embeddings`, `asset_relations` | `SELECT` | `SELECT`, `INSERT`, `UPDATE` |
+| `creators`, `assets` | `SELECT` | `SELECT`, `INSERT`, `UPDATE` |
+| `asset_embeddings` | `SELECT` | `SELECT`, `INSERT` |
+| `ready_assets` (view) | `SELECT` | none |
 | `providers`, `source_records`, `rights_evidence`, `jobs` | none | `SELECT`, `INSERT`, `UPDATE` |
 | `users` | `SELECT`, `INSERT` | none |
 | `boards`, `board_items` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | none |
 | `exports` | `SELECT`, `INSERT`, `UPDATE` | `SELECT`, `UPDATE` on `state` and `object_key` only |
+
+`asset_embeddings` is insert-only so a model rollback is a pointer change.
+`asset_relations` is omitted until a later milestone needs stored edges. The
+`ready_assets` view is how asset detail reads a landing URL and the latest
+evidence row. The view keeps that row when it is verified CC0 and the asset is
+READY, without granting `source_records` or `rights_evidence`.
 
 Deletion is narrow. The API deletes boards and board items because those are
 user-owned. M1 gave the worker no `DELETE` at all: dead jobs stay as the dead

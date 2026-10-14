@@ -46,9 +46,10 @@ defaults without revoking grants already applied to existing tables. The table
 privileges were intentionally broad for M0. Revision 0003, which creates the
 catalog, revokes those defaults before its first table and then grants per
 table: the worker gets `SELECT, INSERT, UPDATE` on all six catalog tables with
-no `DELETE`, and the API gets `SELECT` on `creators` and `assets` only. Later
-tables follow the matrix in the [M2 handoff](../m2-handoff.md). Downgrading 0003
-re-applies the 0002 defaults.
+no `DELETE`, and the API gets `SELECT` on `creators` and `assets` only. Revision
+0006 grants the worker `SELECT, INSERT` on `asset_embeddings` and the API
+`SELECT` on that table and on `ready_assets`. Later tables follow the matrix in
+the [M2 handoff](../m2-handoff.md). Downgrading 0003 re-applies the 0002 defaults.
 
 Re-executing 0001 while a role already exists preserves the password and still
 reapplies role attributes. The password is not updated, so readiness can fail

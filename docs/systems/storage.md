@@ -14,8 +14,11 @@ container creates the `cc0` bucket. Alembic revision 0001 enables `vector` and
 creates the three login roles; 0002 granted broad default privileges for M0;
 0003 revokes those defaults and creates the six ingestion catalog tables
 (`providers`, `creators`, `source_records`, `rights_evidence`, `assets`, `jobs`)
-with per-table grants. What those rows mean is in [ingestion](ingestion.md).
-Embeddings, boards, exports, and users do not exist yet.
+with per-table grants. Revision 0006 adds `asset_embeddings` (worker
+`SELECT, INSERT` only), search lexemes on `assets`, `pg_trgm`, and the
+`ready_assets` view. The view keeps a READY asset whose latest evidence row
+(`checked_at DESC, id DESC`) is verified CC0. What the ingest rows mean is in [ingestion](ingestion.md).
+Search is in [search](search.md). Boards, exports, and users do not exist yet.
 
 ## Architecture
 
@@ -63,10 +66,13 @@ flowchart LR
   dollar-quoted `DO` block built as a plain string.
 - Named volumes `pgdata` and `rustfs_data` survive `docker compose stop`. Only
   `docker compose down -v` deletes them.
-- Catalog grants (revision 0003). `cc0_worker` has `SELECT, INSERT, UPDATE` on
-  all six catalog tables and no `DELETE` anywhere, so dead jobs and rights
-  evidence survive for inspection. `cc0_api` has `SELECT` on `creators` and
-  `assets` only; it cannot see providers, source records, evidence, or jobs.
+- Catalog grants (revision 0003) and embedding grants (revision 0006).
+  `cc0_worker` has `SELECT, INSERT, UPDATE` on the six ingest tables and no
+  `DELETE` anywhere, so dead jobs and rights evidence survive for inspection.
+  On `asset_embeddings` the worker has `SELECT, INSERT` only, so a model
+  version is a new row. `cc0_api` has `SELECT` on `creators`, `assets`,
+  `asset_embeddings`, and the `ready_assets` view. It cannot see providers,
+  source records, evidence, or jobs.
   Every primary key is a UUID from `gen_random_uuid()`, so there are no
   sequences to grant. The migration test checks each table and privilege with
   `has_table_privilege`.
@@ -96,13 +102,18 @@ flowchart LR
   with the Compose command to run, so a stopped container does not look like bad
   credentials, a missing extension, or a missing bucket. It deliberately prints
   host and port only, since the database URL also carries a password.
-- Downgrade is three revisions. 0003 revokes its table grants, drops the
-  catalog tables, and re-applies the 0002 defaults so the next step still
-  matches what it expects. 0002 revokes the default privileges it granted
-  and does not revoke grants already applied to existing tables. 0001 then
-  revokes schema privileges, revokes `CONNECT`, drops the three roles, and
-  drops the extension. `alembic downgrade base` runs all three. The test asserts
-  a clean `upgrade` then `downgrade` round trip.
+- `alembic downgrade base` reverses every revision. 0006 drops `ready_assets`
+  and `asset_embeddings`, deletes `kind = embed` jobs (including succeeded
+  rows), and then restores the ingest-only `jobs_kind_known` check. The delete
+  happens before that check is validated. Those jobs name a checkpoint and a
+  vector table the downgrade removes. Ingest jobs stay until 0003 drops
+  `jobs`. 0003 revokes its table grants, drops the catalog tables, and
+  re-applies the 0002 defaults so the next step still matches what it expects.
+  0002 revokes the default privileges it granted and does not revoke grants
+  already applied to existing tables. 0001 then revokes schema privileges,
+  revokes `CONNECT`, drops the three roles, and drops the extension. The test
+  asserts a clean `upgrade` then `downgrade` round trip, and a downgrade of
+  0006 with an embed job present.
 - A role that already exists is not created again. `ensure_login_sql` emits
   `CREATE ROLE` or attribute-only `ALTER ROLE` depending on `pg_roles`.
   Re-executing 0001 preserves the password and still rewrites role attributes

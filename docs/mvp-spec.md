@@ -161,7 +161,7 @@ Use Alembic migrations and database constraints, not only Pydantic validation. S
 | `source_records` | `id`, `provider_id`, `external_id`, `landing_url`, `original_url` (URL string only), minimal `raw_metadata` JSONB, `rights_classification`, `eligibility_status`, `last_rights_checked_at`, `next_recheck_at`, `first_seen_at`, `last_fetched_at`; unique `(provider_id, external_id)`. **This is the metadata-only negative cache for non-CC0/unknown records; no image objects required.** |
 | `assets` | `id`, `source_record_id`, `creator_id` nullable, `title`, `description`, `location_label`, `created_year_start/end`, `style_tags` text[], `original_key`, `thumbnail_key`, `sha256`, `mime_type`, `width`, `height`, `ingested_at`, `status`; unique `source_record_id` |
 | `rights_evidence` | `id`, `source_record_id`, `asset_id` nullable, `rights_type`, `verification_status`, `evidence_url`, `raw_statement`, `verification_method`, `checked_at`, `reviewer_id` nullable; append-only verification history. Evidence attaches to `source_records` even when **no asset is ever created**. |
-| `asset_embeddings` | `asset_id`, `model_key`, `model_version`, `dimensions`, `embedding vector(N)` with fixed N for a given active model, `generated_at`; unique `(asset_id, model_key, model_version)` |
+| `asset_embeddings` | `asset_id`, `model_key`, `model_version`, `dimensions`, `embedding vector(512)`, `generated_at`; unique `(asset_id, model_key, model_version)`. Insert-only. A wider model needs a new column. |
 | `asset_relations` | `src_asset_id`, `dst_asset_id`, `type`, `origin` (`SOURCE`/`DERIVED`), `score` nullable, `model_version` nullable; unique typed edge identity |
 | `boards` | `id`, `owner_user_id`, `name`, `description`, `created_at`, `updated_at`, `profile_version` nullable |
 | `board_items` | `board_id`, `asset_id`, `position`, `notes`; unique `(board_id, asset_id)` |
@@ -191,8 +191,8 @@ Start with **one** trustworthy API source with explicit rights evidence and stab
 4. **Rights gate:** Check explicit item-level CC0 evidence before any image request. Store `rights_evidence` linked to `source_record`. Classify non-CC0/unknown discoveries as `NON_CC0_CACHED`/`UNKNOWN_CACHED` with reason, evidence, checked-at and recheck-after timestamps. **Stop processing here for all non-eligible items: no RustFS/S3 PUT, no thumbnails, no image embeddings, no public `assets` row.** An eligible record proceeds only after affirmative CC0 verification.
 5. **Eligible CC0 download:** Only now validate/stream the image with maximum bytes, timeout, redirect limit, public-IP/host allowlist and content-type verification. Decode with bounded image processing; reject dangerous/unsupported files. Calculate SHA-256.
 6. **Store:** Write original under an immutable/content-addressed key and generate thumbnail (e.g., max dimension ~512 px, WebP/JPEG). Save both to RustFS locally, and to S3 on AWS, with private access.
-7. **Embed:** Generate one image embedding with active model; record model/version/dimensions. Failure leaves asset non-public/retryable.
-8. **Publish:** Commit consistent DB state as `READY` after required image keys, verified rights and vector are available; update searchable indexes.
+7. **Embed:** A separate `embed` job, enqueued in the same transaction that inserts the asset, reads the original already in object storage and writes one vector for the loaded provider identity. OpenCLIP's identity is `MODEL_KEY` and `MODEL_VERSION`. The fake provider's identity is `fake` / `deterministic-v1`. A failure retries that job only. It does not re-lease the download. The asset stays `STORED` and is not public.
+8. **Publish:** The embed job inserts into `asset_embeddings` (a new model version is a new row) and sets the asset `READY`. Public search reads `ready_assets`: `READY` and the latest evidence row is verified CC0. A newer decision that is not verified CC0 sets `SUPPRESSED` in the same transaction as the evidence insert. `python -m app.worker reembed` queues assets missing the loaded identity and is safe to run again.
 9. **Reconcile:** Scheduled repair detects jobs stuck in progress and orphaned objects. Because object store and PostgreSQL cannot share a transaction, workers must recover safely from partial success.
 
 **Invariant test:** A source record labeled CC BY, public-domain mark, unknown or any non-CC0 type must never trigger an HTTP GET of the image file, any object-storage write, thumbnail generation, or embedding invocation. Repeated discovery before `next_recheck_at` must short-circuit using metadata cache; a subsequent genuine rights change to explicitly verified CC0 can make it eligible. Preserve links and brief evidence text, **not** copyrighted file bytes or data URI previews.
@@ -222,12 +222,12 @@ class EmbeddingProvider(Protocol):
 
 ### Local production-like provider: OpenCLIP
 
-- Use the open-source `open_clip_torch` library with one pinned pretrained image/text model (initial candidate: `ViT-B-32` with `laion2b_s34b_b79k` weights). **Pin actual Python package and model/weight revisions** and verify output dimensions at startup (ViT-B/32 commonly gives 512-dimensional vectors). Do not let an unpinned model download silently alter results.
+- Use the open-source `open_clip_torch` library with one ViT-B checkpoint. The column is `vector(512)`. `MODEL_KEY` and `MODEL_VERSION` choose the checkpoint; `unpinned` refuses to download weights. A manual `python -m app.embeddings` checks width and that a related image/text pair outranks an unrelated one, without comparing bit-exact floats. CI uses the deterministic fake provider. Candidate weights remain `ViT-B-32` / `laion2b_s34b_b79k` until one is chosen. A 768-d model needs a new column.
 - `embed_image`: read **only a verified CC0 original**, decode with Pillow, run the exact model-specific preprocessing, run `encode_image` under inference/no-grad mode, convert to float32 and L2-normalize.
 - `embed_text`: tokenize the user's search string with that same model's tokenizer, run `encode_text`, convert to float32 and L2-normalize. Image and text embeddings now live in a **shared compatible space**.
 - **On ingestion:** one vector is computed for each newly verified CC0 asset and stored in `asset_embeddings` with a model key, weights revision, dimensions and timestamp. A checksum match and existing current-model embedding skips redundant inference.
 - **On search:** compute **one text embedding per query**, not one image embedding for each returned result. PostgreSQL pgvector performs a cosine-distance nearest-neighbor search over stored current-model image vectors. For image-to-image suggestions, use the saved candidate image's existing vector.
-- The worker can load and reuse one model instance for a batch. Do not load model weights per image. CPU mode is sufficient for the small local fixture catalog; benchmark memory/runtime and offer a **deterministic fake embedding provider** only for unit/integration tests (never label fake results as semantic search).
+- The worker can load and reuse one model instance for a batch. Do not load model weights per image. CPU mode is sufficient for the small local fixture catalog. CI and the default local run use the deterministic fake provider. Its vectors are exact and shared between image and text for tests; they are not a semantic model. A chosen OpenCLIP checkpoint is the manual `python -m app.embeddings` smoke and is not selected yet.
 - Keep the actual model weights outside the Git repo and document a cache/preload step for offline repeatability. Validate that the selected pretrained weights and data/model licenses are suitable for the intended use.
 
 ### Cloud option: Bedrock Titan Multimodal Embeddings
@@ -239,9 +239,9 @@ class EmbeddingProvider(Protocol):
 
 ### Vector storage contract and tests
 
-- A migration defines a **fixed dimension** vector column for the chosen active model (e.g. `vector(512)` for the pinned OpenCLIP variant, subject to runtime confirmation). Different dimensionality requires a new column/table/index or schema migration, not silent truncation/padding.
-- L2 normalization and cosine-distance ordering must be covered by unit and real-pgvector integration tests. A query image/text pair with known semantic relevance should beat an unrelated candidate; keep evaluation fixtures small and deterministic.
-- Add a CLI `reembed --provider ... --batch-size ...` that is restart-safe, rate-limited where applicable, records progress, and does **not** affect public availability until the new index is ready.
+- The migration defines `vector(512)`. Different dimensionality requires a new column, not silent truncation or padding. Rows are insert-only, so an older checkpoint can stay in the table and the environment pointer can point search back at it.
+- L2 normalization is covered by the fake provider's unit test. Search and embed store the provider identity: fake rows use `fake` / `deterministic-v1`, and OpenCLIP rows use `MODEL_KEY` / `MODEL_VERSION`. The manual OpenCLIP command checks that a related pair outranks an unrelated one. CI does not load a real model, and no checkpoint has been selected.
+- `python -m app.worker reembed` is restart-safe. It writes new rows for the active checkpoint and does not remove the previous ones. Search reads only the configured model key and version, so the previous ranking stays available until that pointer changes.
 
 ## 7. Search and board recommendations (MVP)
 
@@ -250,8 +250,8 @@ class EmbeddingProvider(Protocol):
 1. **Exact filters:** user-selected creator ID, location, year interval, and license status are applied in SQL before final ranking. Do not infer factual matches from embeddings.
 2. **Text retrieval:** PostgreSQL full-text retrieval over title, description, creator name and tags; include fuzzy matching only with explicit expectations.
 3. **Semantic retrieval:** Generate a text query embedding using the same compatible model family/version as indexed image vectors, then retrieve nearest neighbors by cosine distance.
-4. **Hybrid ranking:** Combine independently ranked lexical and semantic candidates via a clear strategy such as weighted reciprocal rank fusion (RRF); avoid directly adding uncalibrated distance and text scores.
-5. **Related individual images:** Seed candidates from vector neighbors and factual edges; rerank with relational boosts, optional diversity penalty, and exclusion of suppressed/non-CC0 assets. Provide explainable labels when grounded.
+4. **Hybrid ranking:** Reciprocal rank fusion with `k = 60` combines the lexical rank and the cosine rank. Do not add the raw scores. A balanced `"phrase"` in `q` is a required unstemmed match, applied before fusion; a quotes-only query does not call the text encoder. An unpaired quote is stripped, and the response field `applied_query` is the text actually searched. Names and aliases are not stemmed. Titles, tags, and descriptions also have an English-stemmed vector, and `ts_rank_cd` orders the lexical list. Creator trigram similarity is a "did you mean" suggestion, not a change to asset ranking.
+5. **Related individual images:** Exact cosine order of the active model's stored vectors. No HNSW at this corpus size. Creator, location, and overlapping style tags are returned as reasons computed in the query. Persisted `asset_relations` edges are deferred.
 6. **Board-level coherence:** When a board has saved images, form an L2-normalized centroid from their **compatible image embeddings**. The simplest MVP uses it to retrieve additional CC0 candidates with matching mood/style. Exact creator/location filters remain independent. Use the board's saved asset IDs to exclude repeats. Do not recompute every image vector when the board changes—only recompute the lightweight board profile.
 7. **Complement this board:** Take a coherent candidate pool but diversify it against *all* saved images (e.g. maximal marginal relevance/MMR using candidate-to-saved cosine similarity and optional shared metadata). “Complement” means stylistically compatible yet not a near duplicate; it is not a guarantee of human aesthetic judgment.
 8. **Feedback:** Saving/removing pins updates recommendations for the current board. MVP permits a board to be empty (show search/discovery instead); a single-pin board falls back to that image's embedding. If the board contains multiple distinct styles, a single centroid may blur them—multi-cluster board profiles are deliberately future work.
@@ -289,7 +289,7 @@ Seed 50–100 manually inspected queries across moods, styles, creator names, su
 - Docker Engine/Desktop with Compose V2 (Windows users may run via WSL2).
 - Python, Node.js and package manager versions pinned in the repository.
 - Local services: PostgreSQL with pgvector and RustFS. Optional ElasticMQ profile/compose service once queues are implemented.
-- Real pinned OpenCLIP or deterministic fake embeddings (tests only). CPU inference is acceptable for tiny fixture sets; GPU optional. Download/model weights separately, cache them, and keep weights out of version control. The same preprocessing/tokenizer and model must encode images and queries.
+- The default local embedding provider is the deterministic fake. OpenCLIP is optional: `MODEL_VERSION=unpinned` refuses to download weights, and a checkpoint is chosen by the manual smoke rather than by CI. CPU inference is acceptable for tiny fixture sets; GPU optional. Download model weights separately, cache them, and keep weights out of version control. The same preprocessing/tokenizer and model must encode images and queries.
 
 ### Compose expectations
 
@@ -365,8 +365,8 @@ MVP logs should be structured and include request/job/correlation IDs. Track `as
 
 ### Milestone M2 — Image embeddings and hybrid search
 
-- Embedding adapter (fake and real pinned OpenCLIP), concrete image/text encoding, normalized vectors, dimension/model metadata, vector schema, exact metadata filters, lexical search, semantic query, fusion, related-image endpoint, restartable re-embedding CLI.
-- **Accept when:** real local image and text embeddings have matching expected dimensions and shared ranking behavior; seeded queries return stable results; exact filters are respected; model version is recorded; similarity index can be rebuilt. Fake embeddings are used only in tests.
+- Embedding adapter (deterministic fake provider, optional OpenCLIP loader), concrete image/text encoding, normalized vectors, dimension/model metadata, vector schema, exact metadata filters, lexical search, semantic query, fusion, related-image endpoint, restartable re-embedding CLI.
+- **Accept when:** CI and the default local run use the fake provider; those vectors have the column width and the shared image/text ranking the tests demonstrate; seeded queries return stable results; exact filters are respected; the stored model identity is the encoder that produced the vector; the similarity index can be rebuilt for that identity. A chosen OpenCLIP checkpoint is a manual smoke (`python -m app.embeddings`) and is not selected yet.
 
 ### Milestone M3 — Creator-facing UI and boards
 

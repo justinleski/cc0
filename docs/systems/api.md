@@ -1,17 +1,17 @@
 # API process
 
-Status: Implemented (health and readiness only)
+Status: Implemented (health, readiness, and catalog search)
 Owner: [backend/app/](../../backend/app/main.py)
 Depends on: PostgreSQL, RustFS
-Related: [storage.md](storage.md), [ADR-0003](../decisions/0003-database-roles.md), [ADR-0004](../decisions/0004-host-processes.md)
+Related: [storage.md](storage.md), [search.md](search.md), [ADR-0003](../decisions/0003-database-roles.md), [ADR-0004](../decisions/0004-host-processes.md)
 
 ## Summary
 
-A FastAPI application with two routes under `/api/v1`: a liveness check that
-answers from the process alone, and a readiness check that proves Postgres and
-the object store are both reachable with the credentials the application will
-actually use. Middleware attaches a request id to every response and logs one
-line per request. There are no catalog, search, or board routes yet.
+A FastAPI application under `/api/v1`: liveness, readiness, and the public
+catalog. Search, asset detail, and related images read `ready_assets` (READY,
+and the latest evidence row is verified CC0). Creator lookup reads `creators`.
+Board routes are not built. Middleware attaches a request id to
+every response and logs one line per request. Query strings are not logged.
 
 ## Architecture
 
@@ -20,6 +20,7 @@ flowchart TB
   CLIENT["curl / TestClient"] --> MW["RequestContextMiddleware assigns X-Request-ID"]
   MW --> HEALTH["GET /api/v1/health"]
   MW --> READY["GET /api/v1/ready"]
+  MW --> SEARCH["GET /api/v1/assets, /assets/id, /related, /creators"]
   HEALTH -->|"200 always"| OUT200["status: ok"]
   READY --> RUN["run_checks"]
   RUN --> CPG["check_postgres: SELECT 1 as cc0_api"]
@@ -63,7 +64,8 @@ flowchart TB
   name is rejected when, case-insensitively, it is not a Settings field and not
   on that allowlist, and not the ignored ambient name `DATABASE_PASSWORD`, and
   it starts with `APP_`, `DATABASE`, `MIGRATION_`, `WORKER_`, `CC0_`,
-  `OBJECT_STORE_`, `READINESS_`, `INGEST_`, `POSTGRES_`, `RUSTFS_`, `S3_`, or `API_`.
+  `OBJECT_STORE_`, `READINESS_`, `INGEST_`, `EMBEDDING_`, `MODEL_`, `POSTGRES_`,
+  `RUSTFS_`, `S3_`, or `API_`.
   `PATH`, `HOME`, and `GITHUB_*` stay allowed. Database logins are the three
   URLs plus `CC0_*_PASSWORD`; `DATABASE_PASSWORD` is not read. `APP_ENV`
   other than `local` (case-insensitive, whitespace stripped) rejects dummy
@@ -77,12 +79,17 @@ flowchart TB
 - Process entry points load settings once; requests use `app.state.settings`,
   never `get_settings()`. Tests inject `create_app(Settings(...))`.
 - Lifespan creates the API pool from
-  [app/db/engine.py](../../backend/app/db/engine.py) and one S3 client, then
-  disposes and closes them at shutdown. Endpoints and readiness share that one
-  engine on `app.state`: pool size 5, overflow 5, `pool_pre_ping`, 30 minute
-  recycle, 10 second checkout timeout, 5 second psycopg `connect_timeout`. The
-  ingestion worker builds its own 2 + 2 pool in its own process and never
-  imports this one ([ingestion](ingestion.md)).
+  [app/db/engine.py](../../backend/app/db/engine.py), one S3 client, and the
+  configured embedding provider (`prepare()` loads OpenCLIP only when that
+  provider is selected), then disposes and closes them at shutdown. Endpoints
+  and readiness share that one engine on `app.state`: pool size 5, overflow 5,
+  `pool_pre_ping`, 30 minute recycle, 10 second checkout timeout, 5 second
+  psycopg `connect_timeout`. The ingestion worker builds its own 2 + 2 pool in
+  its own process and never imports this one ([ingestion](ingestion.md)).
+  Search routes and ranking rules are in [search](search.md). Catalog reads go
+  through `ready_assets`. Query text is encoded before a connection is checked
+  out of this pool, and each process runs one encode at a time, so inference
+  does not occupy a pooled connection.
 - `statement_timeout` is `SET LOCAL` inside the probe transaction, not an
   engine-wide connection option, so a later request on the same connection
   does not inherit the readiness budget.
@@ -114,7 +121,7 @@ flowchart TB
 
 ## Design decisions
 
-- The API, the future worker, and the frontend run on the host against Compose
+- The API, the worker, and the frontend run on the host against Compose
   data services, and are not containerized yet: [ADR-0004](../decisions/0004-host-processes.md).
 - Readiness uses the restricted `cc0_api` login so the check fails when
   privileges are wrong: [ADR-0003](../decisions/0003-database-roles.md).

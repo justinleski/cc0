@@ -1,9 +1,11 @@
 # CC0 Knowledge Index
 
-What is written down about this repository, and where. Milestones M0 and M1
-have shipped: local infrastructure, a health-check API, and an ingestion worker
-that stores explicitly CC0 Met fixtures with rights evidence. Nothing in the
-catalog is served to users yet.
+What is written down about this repository, and where. Milestones M0 through M2
+have shipped: local infrastructure, a health-check API, an ingestion worker
+that stores explicitly CC0 Met fixtures with rights evidence, and hybrid search
+over those assets once an embedding job marks them `READY`. Boards are not
+built yet. The default embedding provider is a deterministic fake; a real
+OpenCLIP checkpoint is optional and still unpinned.
 
 M0 acceptance: Compose services, migrations, `/api/v1/health` and
 `/api/v1/ready`, and integration checks against pgvector and the RustFS bucket.
@@ -21,8 +23,9 @@ evolve.
   Startup, shared environment, and database concepts.
 - [Evaluation](evaluation.md) — not implemented; spec pointers.
 - [AWS deployment](aws-deployment.md) — not implemented; pilot spec pointers.
-- [M2 engineering handoff](m2-handoff.md) — pooling and the M1 catalog grants
-  are implemented; the grant matrix for M2+ tables is still required.
+- [M2 engineering handoff](m2-handoff.md) — pooling, catalog grants, and the
+  embedding grants are implemented. Grants for users, boards, and exports are
+  still required when those tables are created.
 - [Lint and tests](lint-test.md)
   The individual commands behind `./scripts/check.sh`.
 
@@ -31,10 +34,12 @@ evolve.
 - [Storage](systems/storage.md)
   Postgres with pgvector, RustFS, migrations, database roles and catalog grants.
 - [API process](systems/api.md)
-  FastAPI health and readiness endpoints, configuration, request logging, pools.
+  FastAPI health, readiness, and catalog routes, configuration, request logging, pools.
 - [Ingestion](systems/ingestion.md)
   Met adapter, rights gate, fetch gate, the job row as dead letter, resume
   rules, and operator commands.
+- [Search and embeddings](systems/search.md)
+  The embed job, hybrid ranking, quoted phrases, and the public provenance view.
 
 ## Decisions
 
@@ -45,7 +50,6 @@ evolve.
 
 ## Not documented yet
 
-Embeddings and search, boards, and exports are milestones M2 through M4 in the
-[spec](mvp-spec.md). Each gets a page under `systems/` when its code exists. The
-frontend browses a mock catalog in the meantime; see
-[frontend/README.md](../frontend/README.md).
+Boards and exports are milestones M3 and M4 in the [spec](mvp-spec.md). Each
+gets a page under `systems/` when its code exists. The frontend browses a mock
+catalog in the meantime; see [frontend/README.md](../frontend/README.md).

@@ -29,5 +29,5 @@ blocks the first embedding migration.
   dedicated vector store becomes necessary at a measured threshold.
 - The database is a single point of failure and a single resource pool, so a
   heavy ingestion batch can compete with user queries.
-- Enabling `vector` with no vector tables is slightly misleading until M2 adds
-  embeddings.
+- M2 stores image vectors in `asset_embeddings` and ranks them with an exact
+  cosine scan. An approximate index waits until that scan is measured slow.
