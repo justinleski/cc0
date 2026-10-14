@@ -2,8 +2,9 @@
 
 The migration turns each tuple into a CHECK constraint, so a value the worker
 writes that is missing here fails in the database rather than silently widening
-a column. M1 only ever writes a subset: assets stop at STORED, and the one job
-kind is `ingest`.
+a column. Ingest writes `STORED`. Embed writes `READY` after the vector commits.
+`TABLES` stays the six ingest tables: embeddings are granted separately and are
+insert-only.
 """
 
 TABLES = (
@@ -68,7 +69,10 @@ CACHED_STATUSES = (ELIGIBILITY_NON_CC0_CACHED, ELIGIBILITY_UNKNOWN_CACHED)
 
 ASSET_APPROVED = "APPROVED"
 ASSET_PROCESSING = "PROCESSING"
-# M1 terminal state. READY additionally requires an embedding, which is M2.
+# Bytes are in object storage. READY is the published status. Public search,
+# detail, and related reads go through ready_assets, which also requires the
+# latest rights_evidence row to be verified CC0. SUPPRESSED is written in the
+# same transaction as a newer decision that is not verified CC0.
 ASSET_STORED = "STORED"
 ASSET_READY = "READY"
 ASSET_SUPPRESSED = "SUPPRESSED"
@@ -79,9 +83,23 @@ ASSET_STATUSES = (
     ASSET_READY,
     ASSET_SUPPRESSED,
 )
+# An asset row means the download already happened. A later status must not
+# send ingest back to the image host.
+ASSET_HAS_BYTES = (ASSET_STORED, ASSET_READY, ASSET_SUPPRESSED)
 
 JOB_KIND_INGEST = "ingest"
-JOB_KINDS = (JOB_KIND_INGEST,)
+JOB_KIND_EMBED = "embed"
+JOB_KINDS = (JOB_KIND_INGEST, JOB_KIND_EMBED)
+
+# The public projection. cc0_api selects this and has no privilege on
+# source_records or rights_evidence. The view keeps a READY asset whose latest
+# evidence row is verified CC0.
+READY_ASSETS_VIEW = "ready_assets"
+EMBEDDINGS_TABLE = "asset_embeddings"
+
+# ViT-B image/text models in this family emit 512 dimensions. A wider model
+# needs a new column; the checkpoint itself stays in configuration.
+VECTOR_DIMENSIONS = 512
 
 JOB_PENDING = "pending"
 JOB_LEASED = "leased"

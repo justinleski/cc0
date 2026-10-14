@@ -161,11 +161,21 @@ def _assert_migrated(url: str, passwords: dict[str, str]) -> None:
                 (list(ROLE_NAMES),),
             )
         }
+        views = {
+            row[0]
+            for row in connection.execute(
+                "SELECT viewname FROM pg_views WHERE schemaname = 'public'"
+            )
+        }
+        extensions = {row[0] for row in connection.execute("SELECT extname FROM pg_extension")}
 
     assert extension is not None
     assert set(catalog.TABLES) < tables
-    # Later milestones own these. The catalog revision must not create them.
-    assert {"asset_embeddings", "boards", "board_items", "exports", "users"} & tables == set()
+    assert catalog.EMBEDDINGS_TABLE in tables
+    assert catalog.READY_ASSETS_VIEW in views
+    assert {"vector", "pg_trgm"} <= extensions
+    # Boards, exports, and users are still later milestones.
+    assert {"boards", "board_items", "exports", "users"} & tables == set()
     assert set(roles) == set(ROLE_NAMES)
     for can_login, is_super, can_create_db, can_create_role in roles.values():
         assert can_login is True
@@ -239,3 +249,66 @@ def _assert_catalog_grants(url: str) -> None:
             # providers, source records, evidence, or jobs at all.
             for privilege in ("INSERT", "UPDATE", "DELETE"):
                 assert not granted(ROLE_API, table, privilege), f"{table}.{privilege}"
+
+        embeddings = catalog.EMBEDDINGS_TABLE
+        assert granted(ROLE_WORKER, embeddings, "SELECT")
+        assert granted(ROLE_WORKER, embeddings, "INSERT")
+        assert not granted(ROLE_WORKER, embeddings, "UPDATE"), embeddings
+        assert not granted(ROLE_WORKER, embeddings, "DELETE"), embeddings
+        assert granted(ROLE_API, embeddings, "SELECT")
+        for privilege in ("INSERT", "UPDATE", "DELETE"):
+            assert not granted(ROLE_API, embeddings, privilege), privilege
+        assert granted(ROLE_API, catalog.READY_ASSETS_VIEW, "SELECT")
+        assert not granted(ROLE_WORKER, catalog.READY_ASSETS_VIEW, "SELECT")
+
+
+def test_embeddings_downgrade_removes_embed_jobs_and_keeps_ingest(
+    monkeypatch: pytest.MonkeyPatch,
+    running_stack: Settings,
+) -> None:
+    settings = running_stack
+    base, _ = _split_admin_url(settings.migration_database_url)
+    suffix = uuid4().hex[:12]
+    temp_database = f"cc0_migration_test_{suffix}"
+    temp_url = f"{base}/{temp_database}"
+    isolated_roles = _isolate_role_names(monkeypatch, suffix)
+    monkeypatch.setenv("MIGRATION_DATABASE_URL", temp_url)
+
+    with psycopg.connect(f"{base}/postgres", autocommit=True, connect_timeout=2) as connection:
+        connection.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(temp_database)))
+
+    try:
+        _upgrade(temp_url)
+        with psycopg.connect(temp_url, autocommit=True) as connection:
+            connection.execute(
+                """
+                INSERT INTO jobs (kind, dedupe_key, state) VALUES
+                    (
+                        'embed',
+                        'embed:fake:deterministic-v1:00000000-0000-0000-0000-000000000001',
+                        'succeeded'
+                    ),
+                    ('ingest', 'ingest:met:100001', 'succeeded')
+                """
+            )
+        os.environ["MIGRATION_DATABASE_URL"] = temp_url
+        command.downgrade(_config(), "0005_claim_token")
+        with psycopg.connect(temp_url) as connection:
+            kinds = connection.execute("SELECT kind FROM jobs ORDER BY kind").fetchall()
+            embeddings = connection.execute(
+                """
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = 'asset_embeddings'
+                """
+            ).fetchone()
+        assert kinds == [("ingest",)]
+        assert embeddings is None
+    finally:
+        with psycopg.connect(f"{base}/postgres", autocommit=True) as connection:
+            connection.execute(
+                sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
+                    sql.Identifier(temp_database)
+                )
+            )
+            for role in isolated_roles:
+                connection.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))
