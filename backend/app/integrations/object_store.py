@@ -70,6 +70,34 @@ class ObjectStore:
             raise ObjectStoreUnavailable(type(exc).__name__) from exc
         return response.get("Metadata", {}).get(SHA256_METADATA_KEY)
 
+    def get_bytes(self, key: str) -> bytes | None:
+        """The object body, or None when the key is absent.
+
+        Embed reads the original already stored by ingest. A missing key is a
+        permanent failure for that job, not a reason to download the image again.
+        A timeout or client error while reading the body is ObjectStoreUnavailable,
+        the same as a failed GET, and the body is closed either way.
+        """
+        body = None
+        try:
+            try:
+                response = self._client.get_object(Bucket=self._bucket, Key=key)
+            except ClientError as exc:
+                status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+                if status in (404, 403):
+                    return None
+                raise ObjectStoreUnavailable(type(exc).__name__) from exc
+            except BotoCoreError as exc:
+                raise ObjectStoreUnavailable(type(exc).__name__) from exc
+            body = response["Body"]
+            try:
+                return body.read()
+            except (BotoCoreError, ClientError) as exc:
+                raise ObjectStoreUnavailable(type(exc).__name__) from exc
+        finally:
+            if body is not None:
+                body.close()
+
     def put(self, key: str, body: bytes, content_type: str, sha256: str) -> None:
         try:
             self._client.put_object(
