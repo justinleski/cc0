@@ -6,10 +6,12 @@ terminal `dead` state on the same row an operator already has to look at. That
 keeps the failure joined to the source record, the rights evidence, and the
 attempt history instead of living in a topic that can disagree with them.
 
-`kind` names an independently retryable unit of work. M1 has exactly one,
-`ingest`; M2 adds `embed` with its own dedupe key and attempt budget. There is
-no stage column: a retry reads progress from the catalog and the object store,
-because a committed stage marker can disagree with what was actually written.
+`kind` names an independently retryable unit of work. `ingest` downloads and
+stores. `embed` encodes an original that is already in object storage, with its
+own dedupe key and attempt budget, so a model failure does not re-lease the
+download. There is no stage column: a retry reads progress from the catalog and
+the object store, because a committed stage marker can disagree with what was
+actually written.
 
 Claiming issues a `claim_token`, and every write a worker makes afterwards has
 to present it while the lease is still live. Without that fence a worker whose
@@ -50,7 +52,7 @@ _HAS_STORED_ASSET = """
         SELECT 1 FROM assets
         JOIN source_records ON source_records.id = assets.source_record_id
         JOIN providers ON providers.id = source_records.provider_id
-        WHERE assets.status = :stored
+        WHERE assets.status = ANY(:present)
           AND jobs.dedupe_key = :prefix || providers.name || ':' || source_records.external_id
     )
 """
@@ -68,6 +70,11 @@ CLAIM_HELD = """
 
 def dedupe_key(provider: str, external_id: str) -> str:
     return f"{catalog.JOB_KIND_INGEST}:{provider}:{external_id}"
+
+
+def embed_dedupe_key(model_key: str, model_version: str, asset_id: UUID) -> str:
+    """One embedding job per asset and checkpoint. A new version is a new row."""
+    return f"{catalog.JOB_KIND_EMBED}:{model_key}:{model_version}:{asset_id}"
 
 
 def backoff_seconds(
@@ -197,7 +204,7 @@ class JobStore:
                       AND NOT EXISTS (
                           SELECT 1 FROM assets
                           WHERE assets.source_record_id = :source_record_id
-                            AND assets.status = :stored
+                            AND assets.status = ANY(:present)
                       )
                     RETURNING id
                     """
@@ -208,7 +215,7 @@ class JobStore:
                     "pending": catalog.JOB_PENDING,
                     "resettable": list(RESETTABLE_STATES),
                     "cached": list(catalog.CACHED_STATUSES),
-                    "stored": catalog.ASSET_STORED,
+                    "present": list(catalog.ASSET_HAS_BYTES),
                 },
             ).scalar_one_or_none()
         return updated is not None
@@ -218,6 +225,8 @@ class JobStore:
         *,
         lease_seconds: int,
         kind: str = catalog.JOB_KIND_INGEST,
+        model_key: str | None = None,
+        model_version: str | None = None,
     ) -> ClaimedJob | None:
         """Take one runnable job. FOR UPDATE SKIP LOCKED keeps it single-flight.
 
@@ -227,11 +236,32 @@ class JobStore:
 
         A new token is issued on every claim, including a reclaim, so the
         previous holder of this row can no longer write to it.
+
+        An embed claim names the loaded provider identity and locks only those
+        rows. A job for another checkpoint stays pending, retry_wait, or leased
+        by its owner, and this claim does not spend its attempts.
         """
+        params: dict[str, Any] = {
+            "kind": kind,
+            "pending": catalog.JOB_PENDING,
+            "retry_wait": catalog.JOB_RETRY_WAIT,
+            "leased": catalog.JOB_LEASED,
+            "lease_seconds": lease_seconds,
+        }
+        model_sql = ""
+        if kind == catalog.JOB_KIND_EMBED:
+            if not model_key or not model_version:
+                raise ValueError("an embed claim names the loaded checkpoint")
+            model_sql = """
+                          AND payload->>'model_key' = :model_key
+                          AND payload->>'model_version' = :model_version
+            """
+            params["model_key"] = model_key
+            params["model_version"] = model_version
         with self._engine.begin() as connection:
             row = connection.execute(
                 text(
-                    """
+                    f"""
                     WITH candidate AS (
                         SELECT id FROM jobs
                         WHERE kind = :kind
@@ -242,6 +272,7 @@ class JobStore:
                                   AND (next_run_at IS NULL OR next_run_at <= now()))
                               OR (state = :leased AND leased_until < now())
                           )
+                          {model_sql}
                         ORDER BY COALESCE(next_run_at, created_at)
                         FOR UPDATE SKIP LOCKED
                         LIMIT 1
@@ -257,13 +288,7 @@ class JobStore:
                               payload, claim_token
                     """
                 ),
-                {
-                    "kind": kind,
-                    "pending": catalog.JOB_PENDING,
-                    "retry_wait": catalog.JOB_RETRY_WAIT,
-                    "leased": catalog.JOB_LEASED,
-                    "lease_seconds": lease_seconds,
-                },
+                params,
             ).one_or_none()
         if row is None:
             return None
@@ -283,17 +308,18 @@ class JobStore:
         A lease that expired on the last attempt would otherwise sit in `leased`
         forever, invisible to both the claim query and the operator.
 
-        Durable catalog state is read first. A job whose asset is already
-        `STORED` finished its work, so it is reconciled as succeeded rather than
-        dead-lettered into an operator's queue for a redrive that has nothing
-        left to do.
+        Durable catalog state is read first. An ingest job whose asset already
+        has bytes, or an embed job whose vector row exists, finished its work,
+        so it is reconciled as succeeded rather than dead-lettered.
         """
+        if kind == catalog.JOB_KIND_EMBED:
+            return self._reap_embed()
         with self._engine.begin() as connection:
             settled = {
                 "kind": kind,
                 "leased": catalog.JOB_LEASED,
                 "retry_wait": catalog.JOB_RETRY_WAIT,
-                "stored": catalog.ASSET_STORED,
+                "present": list(catalog.ASSET_HAS_BYTES),
                 "prefix": f"{kind}:",
             }
             connection.execute(
@@ -306,6 +332,53 @@ class JobStore:
                         next_run_at = NULL,
                         updated_at = now()
                     WHERE {_UNCLAIMABLE} AND {_HAS_STORED_ASSET}
+                    """
+                ),
+                {**settled, "succeeded": catalog.JOB_SUCCEEDED},
+            )
+            result = connection.execute(
+                text(
+                    f"""
+                    UPDATE jobs SET
+                        state = :dead,
+                        dead_at = now(),
+                        leased_until = NULL,
+                        claim_token = NULL,
+                        last_error = COALESCE(last_error, :reason),
+                        updated_at = now()
+                    WHERE {_UNCLAIMABLE}
+                    """
+                ),
+                {**settled, "dead": catalog.JOB_DEAD, "reason": "attempts_exhausted"},
+            )
+        return result.rowcount
+
+    def _reap_embed(self) -> int:
+        """An embed job is done when its vector row exists, whatever the asset status."""
+        has_vector = f"""
+            EXISTS (
+                SELECT 1 FROM {catalog.EMBEDDINGS_TABLE}
+                WHERE asset_id = (jobs.payload->>'asset_id')::uuid
+                  AND model_key = jobs.payload->>'model_key'
+                  AND model_version = jobs.payload->>'model_version'
+            )
+        """
+        with self._engine.begin() as connection:
+            settled = {
+                "kind": catalog.JOB_KIND_EMBED,
+                "leased": catalog.JOB_LEASED,
+                "retry_wait": catalog.JOB_RETRY_WAIT,
+            }
+            connection.execute(
+                text(
+                    f"""
+                    UPDATE jobs SET
+                        state = :succeeded,
+                        leased_until = NULL,
+                        claim_token = NULL,
+                        next_run_at = NULL,
+                        updated_at = now()
+                    WHERE {_UNCLAIMABLE} AND {has_vector}
                     """
                 ),
                 {**settled, "succeeded": catalog.JOB_SUCCEEDED},

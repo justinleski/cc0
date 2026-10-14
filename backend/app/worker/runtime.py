@@ -17,10 +17,12 @@ from sqlalchemy import Engine
 
 from app.core.config import Settings
 from app.db.engine import create_worker_engine
+from app.embeddings.provider import EmbeddingProvider, build_provider
 from app.ingestion.fetch import HttpImageFetcher, HttpJsonSource, Pacer
 from app.ingestion.fixtures import FixtureSource
 from app.ingestion.met import MetAdapter
 from app.integrations.object_store import ObjectStore, create_s3_client
+from app.worker.embed import EmbedService
 from app.worker.ingest import IngestService
 from app.worker.jobs import JobStore
 from app.worker.store import CatalogStore
@@ -31,6 +33,8 @@ class WorkerRuntime:
     settings: Settings
     engine: Engine
     service: IngestService
+    embed_service: EmbedService
+    embeddings: EmbeddingProvider
     job_store: JobStore
     # The recorded-fixture source in fixture mode, which also carries the
     # request log. Tests assert against it; the CLI does not use it.
@@ -76,18 +80,32 @@ def build_runtime(settings: Settings) -> WorkerRuntime:
         closers.extend([json_source.close, image_fetcher.close])
 
     job_store = JobStore(engine)
+    catalog_store = CatalogStore(engine)
+    object_store = ObjectStore(s3, settings.object_store_bucket)
+    embeddings = build_provider(settings)
     service = IngestService(
         settings=settings,
         adapter=MetAdapter(json_source),
         image_fetcher=image_fetcher,
-        object_store=ObjectStore(s3, settings.object_store_bucket),
-        catalog_store=CatalogStore(engine),
+        object_store=object_store,
+        catalog_store=catalog_store,
+        job_store=job_store,
+        embedding_model_key=embeddings.model_key,
+        embedding_model_version=embeddings.model_version,
+    )
+    embed_service = EmbedService(
+        settings=settings,
+        embeddings=embeddings,
+        object_store=object_store,
+        catalog_store=catalog_store,
         job_store=job_store,
     )
     return WorkerRuntime(
         settings=settings,
         engine=engine,
         service=service,
+        embed_service=embed_service,
+        embeddings=embeddings,
         job_store=job_store,
         source=source,
         _closers=closers,

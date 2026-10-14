@@ -1,7 +1,8 @@
 """Operator entry point: `python -m app.worker <command>`.
 
-    ingest   discover (or take explicit ids), queue what is due, run the queue
-    drain    run already queued jobs only
+    ingest   discover (or take explicit ids), queue what is due, run ingest then embed
+    drain    run already queued ingest jobs, then embed jobs
+    reembed  queue assets missing the active checkpoint and run those jobs
     jobs     list jobs in one state, which is how dead letters are inspected
     redrive  return a dead job to pending and reset its attempts
 
@@ -16,6 +17,7 @@ import sys
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db import catalog
+from app.worker.embed import EmbedOutcome
 from app.worker.ingest import IngestOutcome
 from app.worker.runtime import WorkerRuntime, build_runtime
 
@@ -38,6 +40,8 @@ def _parser() -> argparse.ArgumentParser:
 
     drain = commands.add_parser("drain", help="run queued jobs")
     drain.add_argument("--max-jobs", type=int, default=None)
+
+    commands.add_parser("reembed", help="queue and run missing embeddings for the active model")
 
     listing = commands.add_parser("jobs", help="list jobs by state")
     listing.add_argument("--state", default=catalog.JOB_DEAD, choices=list(catalog.JOB_STATES))
@@ -63,16 +67,51 @@ def _report(outcomes: list[IngestOutcome]) -> int:
     return 1 if any(outcome.result == catalog.JOB_DEAD for outcome in outcomes) else 0
 
 
+def _report_embed(outcomes: list[EmbedOutcome]) -> int:
+    for outcome in outcomes:
+        logger.info(
+            "embed asset_id=%s result=%s detail=%s",
+            outcome.asset_id,
+            outcome.result,
+            outcome.detail,
+        )
+    return 1 if any(outcome.result == catalog.JOB_DEAD for outcome in outcomes) else 0
+
+
+def _run_embed(runtime: WorkerRuntime, max_jobs: int | None) -> int:
+    """Drain embed jobs. Without a cap, keep going until the queue is idle or one dies."""
+    code = 0
+    rounds = 1 if max_jobs is not None else 20
+    for _ in range(rounds):
+        outcomes = runtime.embed_service.drain(max_jobs)
+        code = max(code, _report_embed(outcomes))
+        if not outcomes or code or max_jobs is not None:
+            break
+    return code
+
+
 def _dispatch(args: argparse.Namespace, runtime: WorkerRuntime) -> int:
     service = runtime.service
     if args.command == "ingest":
         external_ids = args.object_ids or service.discover(args.limit)
         for external_id, reason in service.enqueue(list(external_ids)).items():
             logger.info("skipped external_id=%s reason=%s", external_id, reason)
-        return _report(service.drain())
+        ingest_code = _report(service.drain())
+        return max(ingest_code, _run_embed(runtime, None))
 
     if args.command == "drain":
-        return _report(service.drain(args.max_jobs))
+        ingest_code = _report(service.drain(args.max_jobs))
+        return max(ingest_code, _run_embed(runtime, args.max_jobs))
+
+    if args.command == "reembed":
+        queued = runtime.embed_service.enqueue_missing()
+        logger.info(
+            "reembed queued=%s model=%s version=%s",
+            queued,
+            runtime.embeddings.model_key,
+            runtime.embeddings.model_version,
+        )
+        return _run_embed(runtime, None)
 
     if args.command == "jobs":
         for row in runtime.job_store.list_by_state(args.state, args.limit):

@@ -24,6 +24,7 @@ from sqlalchemy import text
 from app.core.config import Settings
 from app.db import catalog
 from app.db.engine import create_worker_engine
+from app.embeddings.provider import build_provider
 from app.ingestion.errors import TransientFailure
 from app.ingestion.fetch import FetchedImage
 from app.ingestion.fixtures import FixtureSource
@@ -112,6 +113,8 @@ class Harness:
             object_store=self.objects,
             catalog_store=self.catalog_store,
             job_store=self.job_store,
+            embedding_model_key=self.service.embedding_model_key,
+            embedding_model_version=self.service.embedding_model_version,
         )
         self.extra_services.append(service)
         return service
@@ -190,6 +193,7 @@ def harness(
     objects = RecordingObjectStore(client, settings.object_store_bucket)
     catalog_store = CatalogStore(engine)
     job_store = JobStore(engine)
+    embeddings = build_provider(settings)
     harness = Harness(
         settings=settings,
         database=catalog_database,
@@ -200,6 +204,8 @@ def harness(
             object_store=objects,
             catalog_store=catalog_store,
             job_store=job_store,
+            embedding_model_key=embeddings.model_key,
+            embedding_model_version=embeddings.model_version,
         ),
         source=source,
         objects=objects,
@@ -270,10 +276,11 @@ def test_non_cc0_and_unknown_records_never_reach_an_image(harness: Harness) -> N
     assert harness.scalar("SELECT count(*) FROM assets") == 0
     assert harness.source.image_requests == []
     assert harness.objects.puts == []
-    # No embedding write is structural in M1: there is nowhere to write one.
+    # The embeddings table exists, and a non-CC0 record still does not get a row.
+    assert harness.scalar(f"SELECT count(*) FROM {catalog.EMBEDDINGS_TABLE}") == 0
     assert harness.scalar(
-        "SELECT count(*) FROM pg_tables"
-        " WHERE schemaname = 'public' AND tablename = 'asset_embeddings'"
+        "SELECT count(*) FROM jobs WHERE kind = :kind",
+        kind=catalog.JOB_KIND_EMBED,
     ) == 0
 
     rows = harness.query(

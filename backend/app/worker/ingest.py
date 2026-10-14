@@ -72,6 +72,8 @@ class IngestService:
         object_store: ObjectStore,
         catalog_store: CatalogStore,
         job_store: JobStore,
+        embedding_model_key: str,
+        embedding_model_version: str,
     ) -> None:
         self._settings = settings
         self._adapter = adapter
@@ -79,6 +81,10 @@ class IngestService:
         self._objects = object_store
         self._catalog = catalog_store
         self._jobs = job_store
+        # The provider's stored identity, which for the fake provider is not
+        # MODEL_KEY / MODEL_VERSION.
+        self.embedding_model_key = embedding_model_key
+        self.embedding_model_version = embedding_model_version
         self._provider_id: UUID | None = None
 
     @property
@@ -112,7 +118,7 @@ class IngestService:
                 skipped[external_id] = SKIPPED_CACHE
                 continue
             asset = self._catalog.get_asset(record.id)
-            if asset is not None and asset.status == catalog.ASSET_STORED:
+            if asset is not None and asset.status in catalog.ASSET_HAS_BYTES:
                 skipped[external_id] = ALREADY_STORED
                 continue
             dedupe = job_module.dedupe_key(self._adapter.provider_name, external_id)
@@ -246,7 +252,7 @@ class IngestService:
             return IngestOutcome(external_id, SKIPPED_CACHE, record.eligibility_status)
 
         asset = self._catalog.get_asset(record.id)
-        if asset is not None and asset.status == catalog.ASSET_STORED:
+        if asset is not None and asset.status in catalog.ASSET_HAS_BYTES:
             return IngestOutcome(external_id, ALREADY_STORED, asset.sha256)
 
         item: MetItem | None = None
@@ -371,6 +377,9 @@ class IngestService:
             mime_type=prepared["mime_type"],
             width=prepared["width"],
             height=prepared["height"],
+            model_key=self.embedding_model_key,
+            model_version=self.embedding_model_version,
+            embed_max_attempts=self._settings.ingest_max_attempts,
         )
         # store_asset committed the job's success alongside the row above.
         if asset_id is None:

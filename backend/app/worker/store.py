@@ -24,7 +24,7 @@ from uuid import UUID
 from sqlalchemy import Connection, Engine, text
 
 from app.db import catalog
-from app.worker.jobs import CLAIM_HELD, ClaimedJob, ClaimLost
+from app.worker.jobs import CLAIM_HELD, ClaimedJob, ClaimLost, embed_dedupe_key
 
 
 @dataclass(frozen=True)
@@ -75,6 +75,75 @@ _SOURCE_COLUMNS = """
     rights_classification, eligibility_status, next_recheck_at,
     (next_recheck_at IS NOT NULL AND next_recheck_at <= now()) AS recheck_due
 """
+
+
+def _append_evidence(
+    connection: Connection,
+    *,
+    source_record_id: UUID,
+    rights_type: str,
+    verification_status: str,
+    verification_method: str,
+    evidence_url: str | None,
+    raw_statement: str,
+    decision_reason: str,
+) -> None:
+    connection.execute(
+        text(
+            """
+            INSERT INTO rights_evidence (
+                source_record_id, rights_type, verification_status,
+                evidence_url, raw_statement, verification_method,
+                decision_reason
+            ) VALUES (
+                :source_record_id, :rights_type, :verification_status,
+                :evidence_url, :raw_statement, :verification_method,
+                :decision_reason
+            )
+            """
+        ),
+        {
+            "source_record_id": source_record_id,
+            "rights_type": rights_type,
+            "verification_status": verification_status,
+            "evidence_url": evidence_url,
+            "raw_statement": raw_statement,
+            "verification_method": verification_method,
+            "decision_reason": decision_reason,
+        },
+    )
+
+
+def _suppress_unless_verified_cc0(
+    connection: Connection,
+    source_record_id: UUID,
+    rights_type: str,
+    verification_status: str,
+) -> None:
+    """Unpublish when this decision is anything other than verified CC0.
+
+    Runs in the same transaction as the evidence insert. A verified CC0 row
+    leaves status unchanged.
+    """
+    if (
+        rights_type == catalog.RIGHTS_CC0
+        and verification_status == catalog.VERIFICATION_VERIFIED
+    ):
+        return
+    connection.execute(
+        text(
+            """
+            UPDATE assets
+               SET status = :suppressed
+             WHERE source_record_id = :source_record_id
+               AND status <> :suppressed
+            """
+        ),
+        {
+            "source_record_id": source_record_id,
+            "suppressed": catalog.ASSET_SUPPRESSED,
+        },
+    )
 
 
 def _hold_claim(connection: Connection, job: ClaimedJob) -> None:
@@ -235,29 +304,52 @@ class CatalogStore:
                     "recheck_days": recheck_days,
                 },
             )
-            connection.execute(
-                text(
-                    """
-                    INSERT INTO rights_evidence (
-                        source_record_id, rights_type, verification_status,
-                        evidence_url, raw_statement, verification_method,
-                        decision_reason
-                    ) VALUES (
-                        :source_record_id, :rights_type, :verification_status,
-                        :evidence_url, :raw_statement, :verification_method,
-                        :decision_reason
-                    )
-                    """
-                ),
-                {
-                    "source_record_id": record.id,
-                    "rights_type": classification,
-                    "verification_status": verification_status,
-                    "evidence_url": evidence_url,
-                    "raw_statement": raw_statement,
-                    "verification_method": verification_method,
-                    "decision_reason": decision_reason,
-                },
+            _append_evidence(
+                connection,
+                source_record_id=record.id,
+                rights_type=classification,
+                verification_status=verification_status,
+                verification_method=verification_method,
+                evidence_url=evidence_url,
+                raw_statement=raw_statement,
+                decision_reason=decision_reason,
+            )
+            _suppress_unless_verified_cc0(
+                connection, record.id, classification, verification_status
+            )
+
+    def record_superseding_rights(
+        self,
+        source_record_id: UUID,
+        *,
+        rights_type: str,
+        verification_status: str,
+        verification_method: str,
+        evidence_url: str | None,
+        raw_statement: str,
+        decision_reason: str,
+    ) -> None:
+        """Append a rights decision and unpublish when it is not verified CC0.
+
+        Ingest treats an asset that already has bytes as finished
+        (`ASSET_HAS_BYTES` includes STORED, READY, and SUPPRESSED) and does not
+        re-run the rights gate. A withdrawal after publish goes through this
+        function. The evidence insert and the status change commit together.
+        A verified CC0 row is appended and leaves status unchanged.
+        """
+        with self._engine.begin() as connection:
+            _append_evidence(
+                connection,
+                source_record_id=source_record_id,
+                rights_type=rights_type,
+                verification_status=verification_status,
+                verification_method=verification_method,
+                evidence_url=evidence_url,
+                raw_statement=raw_statement,
+                decision_reason=decision_reason,
+            )
+            _suppress_unless_verified_cc0(
+                connection, source_record_id, rights_type, verification_status
             )
 
     def latest_evidence(self, source_record_id: UUID) -> Evidence | None:
@@ -336,6 +428,9 @@ class CatalogStore:
         mime_type: str,
         width: int,
         height: int,
+        model_key: str,
+        model_version: str,
+        embed_max_attempts: int,
     ) -> UUID | None:
         """Insert the asset as STORED and finish the job. None when it existed.
 
@@ -401,6 +496,35 @@ class CatalogStore:
                     "status": catalog.ASSET_STORED,
                 },
             ).scalar_one_or_none()
+            if asset_id is not None:
+                # Same transaction as the asset. A crash here does not leave a
+                # stored image with no embed job, and the embed job does not
+                # re-download if encoding fails.
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO jobs (kind, dedupe_key, state, payload, max_attempts)
+                        VALUES (
+                            :kind, :dedupe_key, :state, CAST(:payload AS jsonb), :max_attempts
+                        )
+                        ON CONFLICT (dedupe_key) DO NOTHING
+                        """
+                    ),
+                    {
+                        "kind": catalog.JOB_KIND_EMBED,
+                        "dedupe_key": embed_dedupe_key(model_key, model_version, asset_id),
+                        "state": catalog.JOB_PENDING,
+                        "payload": json.dumps(
+                            {
+                                "asset_id": str(asset_id),
+                                "model_key": model_key,
+                                "model_version": model_version,
+                                "original_key": original_key,
+                            }
+                        ),
+                        "max_attempts": embed_max_attempts,
+                    },
+                )
             connection.execute(
                 text(
                     """
@@ -417,3 +541,184 @@ class CatalogStore:
                 {"job_id": job.id, "succeeded": catalog.JOB_SUCCEEDED},
             )
             return asset_id
+
+    def get_asset_by_id(self, asset_id: UUID) -> Asset | None:
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                text(
+                    """
+                    SELECT id, status, sha256, original_key, thumbnail_key FROM assets
+                    WHERE id = :asset_id
+                    """
+                ),
+                {"asset_id": asset_id},
+            ).one_or_none()
+        if row is None:
+            return None
+        return Asset(
+            id=row.id,
+            status=row.status,
+            sha256=row.sha256,
+            original_key=row.original_key,
+            thumbnail_key=row.thumbnail_key,
+        )
+
+    def embedding_exists(self, asset_id: UUID, model_key: str, model_version: str) -> bool:
+        with self._engine.begin() as connection:
+            found = connection.execute(
+                text(
+                    f"""
+                    SELECT 1 FROM {catalog.EMBEDDINGS_TABLE}
+                    WHERE asset_id = :asset_id
+                      AND model_key = :model_key
+                      AND model_version = :model_version
+                    """
+                ),
+                {
+                    "asset_id": asset_id,
+                    "model_key": model_key,
+                    "model_version": model_version,
+                },
+            ).scalar_one_or_none()
+        return found is not None
+
+    def publish_existing_embedding(self, job: ClaimedJob, asset_id: UUID) -> None:
+        """Mark READY when this checkpoint's vector is already stored.
+
+        Does not write a vector. A retried job must not replace the row that
+        the first attempt committed.
+        """
+        with self._engine.begin() as connection:
+            _hold_claim(connection, job)
+            connection.execute(
+                text(
+                    """
+                    UPDATE assets SET status = :ready
+                    WHERE id = :asset_id AND status = :stored
+                    """
+                ),
+                {
+                    "asset_id": asset_id,
+                    "ready": catalog.ASSET_READY,
+                    "stored": catalog.ASSET_STORED,
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    UPDATE jobs SET
+                        state = :succeeded,
+                        leased_until = NULL,
+                        claim_token = NULL,
+                        next_run_at = NULL,
+                        last_error = NULL,
+                        updated_at = now()
+                    WHERE id = :job_id
+                    """
+                ),
+                {"job_id": job.id, "succeeded": catalog.JOB_SUCCEEDED},
+            )
+
+    def save_embedding(
+        self,
+        *,
+        job: ClaimedJob,
+        asset_id: UUID,
+        model_key: str,
+        model_version: str,
+        dimensions: int,
+        vector: list[float],
+    ) -> None:
+        """Insert the vector and publish the asset. The vector row is not updated.
+
+        A second attempt that finds the row already written still moves a
+        STORED asset to READY. An asset that is already READY stays READY, so
+        a later model version does not unpublish the previous one.
+        """
+        literal = "[" + ",".join(format(value, ".8g") for value in vector) + "]"
+        with self._engine.begin() as connection:
+            _hold_claim(connection, job)
+            connection.execute(
+                text(
+                    f"""
+                    INSERT INTO {catalog.EMBEDDINGS_TABLE} (
+                        asset_id, model_key, model_version, dimensions, embedding
+                    ) VALUES (
+                        :asset_id, :model_key, :model_version, :dimensions,
+                        CAST(:embedding AS vector)
+                    )
+                    ON CONFLICT (asset_id, model_key, model_version) DO NOTHING
+                    """
+                ),
+                {
+                    "asset_id": asset_id,
+                    "model_key": model_key,
+                    "model_version": model_version,
+                    "dimensions": dimensions,
+                    "embedding": literal,
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    UPDATE assets SET status = :ready
+                    WHERE id = :asset_id AND status = :stored
+                    """
+                ),
+                {
+                    "asset_id": asset_id,
+                    "ready": catalog.ASSET_READY,
+                    "stored": catalog.ASSET_STORED,
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    UPDATE jobs SET
+                        state = :succeeded,
+                        leased_until = NULL,
+                        claim_token = NULL,
+                        next_run_at = NULL,
+                        last_error = NULL,
+                        updated_at = now()
+                    WHERE id = :job_id
+                    """
+                ),
+                {"job_id": job.id, "succeeded": catalog.JOB_SUCCEEDED},
+            )
+
+    def assets_missing_embedding(self, model_key: str, model_version: str) -> list[Asset]:
+        """STORED or READY assets with no row for this checkpoint."""
+        with self._engine.begin() as connection:
+            rows = connection.execute(
+                text(
+                    f"""
+                    SELECT assets.id, assets.status, assets.sha256,
+                           assets.original_key, assets.thumbnail_key
+                    FROM assets
+                    WHERE assets.status = ANY(:present)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM {catalog.EMBEDDINGS_TABLE} AS embedding
+                          WHERE embedding.asset_id = assets.id
+                            AND embedding.model_key = :model_key
+                            AND embedding.model_version = :model_version
+                      )
+                    ORDER BY assets.ingested_at, assets.id
+                    """
+                ),
+                {
+                    "present": [catalog.ASSET_STORED, catalog.ASSET_READY],
+                    "model_key": model_key,
+                    "model_version": model_version,
+                },
+            ).all()
+        return [
+            Asset(
+                id=row.id,
+                status=row.status,
+                sha256=row.sha256,
+                original_key=row.original_key,
+                thumbnail_key=row.thumbnail_key,
+            )
+            for row in rows
+        ]

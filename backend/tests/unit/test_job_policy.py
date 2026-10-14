@@ -2,8 +2,10 @@
 
 import random
 
+import pytest
+
 from app.db import catalog
-from app.worker.jobs import RESETTABLE_STATES, backoff_seconds, dedupe_key
+from app.worker.jobs import RESETTABLE_STATES, JobStore, backoff_seconds, dedupe_key
 
 
 def test_dedupe_key_is_stable_per_provider_and_external_id():
@@ -43,3 +45,9 @@ def test_only_a_finished_job_is_resettable_by_a_repeat_ingest():
     assert catalog.JOB_RETRY_WAIT not in RESETTABLE_STATES
     assert catalog.JOB_PENDING not in RESETTABLE_STATES
     assert set(RESETTABLE_STATES) == {catalog.JOB_SUCCEEDED}
+
+
+def test_an_embed_claim_names_the_loaded_checkpoint():
+    store = JobStore(None)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="loaded checkpoint"):
+        store.claim(lease_seconds=30, kind=catalog.JOB_KIND_EMBED)
