@@ -16,10 +16,22 @@ Python 3.12 or newer. Node 22, the version in `frontend/.nvmrc`. CI pins Python
 3.12 and Node 22. `npm ci` installs the exact lockfile versions.
 CI runs the check script sequentially, then runs `npm run build` in a separate
 `Production frontend build` job after the check passes. The build job installs
-the locked frontend dependencies with `npm ci`.
-New runs cancel superseded runs for the same branch or pull request
-(`github.head_ref || github.ref`); a different branch is left running.
-setup-python caches pip downloads.
+the locked frontend dependencies with `npm ci`. CI runs on pull requests and
+pushes to `main`, avoiding a second run for pushes to an open PR branch. New
+runs cancel superseded runs for the same PR or branch.
+setup-python caches pip downloads, and setup-node caches npm downloads in both
+jobs. These caches do not replace dependency installation. The build job also
+caches `frontend/.next/cache` using the frontend lockfile and source/config
+hashes; the production build still runs whenever the frontend changes.
+
+The CI check job compares the PR test merge commit with its base, or a `main`
+push with the preceding commit. Backend, documentation, and Compose-only changes
+still run backend lint, tests, migrations, and integration tests, but skip
+frontend installation, lint, type-checking, and the production build. Any other
+changed path, including workflow and check-script changes, runs all frontend
+checks. If the comparison base is unavailable, CI runs everything. Locally,
+`./scripts/check.sh` always runs all checks unless explicitly called with
+`RUN_FRONTEND_CHECKS=false` for a backend-only loop.
 
 ## Checks that need nothing running
 
