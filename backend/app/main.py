@@ -4,9 +4,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
+from app.api.search import router as search_router
 from app.core.config import Settings, get_settings
 from app.core.logging import RequestContextMiddleware, configure_logging
 from app.db.engine import create_api_engine
+from app.embeddings.provider import build_provider
 from app.integrations.object_store import create_s3_client
 
 
@@ -21,6 +23,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 app.state.db_engine = engine
                 app.state.s3_client = client
+                # Fake embeddings prepare in memory. OpenCLIP loads here only
+                # when that provider is configured, and checks the vector width.
+                embeddings = build_provider(app.state.settings)
+                embeddings.prepare()
+                app.state.embeddings = embeddings
                 yield
             finally:
                 client.close()
@@ -31,6 +38,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings or get_settings()
     app.add_middleware(RequestContextMiddleware)
     app.include_router(health_router)
+    app.include_router(search_router)
     return app
 
 
