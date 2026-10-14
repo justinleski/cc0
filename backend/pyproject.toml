@@ -23,6 +23,11 @@ dev = [
     "pytest==8.4.2",
     "ruff==0.14.0",
 ]
+# Real image/text embeddings. Not installed by CI. The manual smoke command is
+# `python -m app.embeddings` after `pip install -e "backend[embeddings]"`.
+embeddings = [
+    "open-clip-torch==2.32.0",
+]
 
 [build-system]
 requires = ["setuptools>=75"]

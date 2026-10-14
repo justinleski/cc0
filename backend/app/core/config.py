@@ -52,6 +52,8 @@ CONFIG_ENV_PREFIXES = (
     "OBJECT_STORE_",
     "READINESS_",
     "INGEST_",
+    "EMBEDDING_",
+    "MODEL_",
     "POSTGRES_",
     "RUSTFS_",
     "S3_",
@@ -119,6 +121,7 @@ class Settings(BaseSettings):
         # After pydantic builds the model. Raising here avoids ValidationError,
         # whose payload is the whole settings dict and would print secrets.
         self._reject_nonlocal_defaults()
+        self._reject_embedding_width()
 
     def _reject_nonlocal_defaults(self) -> None:
         # "Local", " local ", and "LOCAL" are local. Anything else is fail-closed.
@@ -150,6 +153,19 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Non-local environments require a non-local object store endpoint"
             )
+
+    def _reject_embedding_width(self) -> None:
+        # Called from __init__ after the model exists. The column is vector(512)
+        # for the ViT-B family; a different width would truncate or pad.
+        from app.db.catalog import VECTOR_DIMENSIONS
+
+        if self.model_dimensions != VECTOR_DIMENSIONS:
+            raise ValueError(
+                f"MODEL_DIMENSIONS must be {VECTOR_DIMENSIONS}; "
+                "a different width needs a new vector column"
+            )
+        if not self.model_key.strip() or not self.model_version.strip():
+            raise ValueError("MODEL_KEY and MODEL_VERSION are required")
 
     app_env: str = "local"
     migration_database_url: str = Field(
@@ -201,6 +217,16 @@ class Settings(BaseSettings):
     ingest_metadata_hosts: str = "collectionapi.metmuseum.org"
     ingest_image_hosts: str = "images.metmuseum.org"
 
+    # Embeddings. `fake` is deterministic and is the default local provider and
+    # what CI runs. Its stored identity is fake/deterministic-v1, not this pair.
+    # `openclip` loads a ViT-B checkpoint from MODEL_KEY / MODEL_VERSION;
+    # `unpinned` refuses to download weights. The column is fixed at 512 dimensions.
+    embedding_provider: Literal["fake", "openclip"] = "fake"
+    model_key: str = "ViT-B-32"
+    model_version: str = "unpinned"
+    model_dimensions: int = 512
+    embedding_cache_dir: str = "backend/.cache/embeddings"
+
     @property
     def fixture_dir(self) -> Path:
         path = Path(self.ingest_fixture_dir)
@@ -213,6 +239,11 @@ class Settings(BaseSettings):
     @property
     def image_host_allowlist(self) -> frozenset[str]:
         return _host_set(self.ingest_image_hosts)
+
+    @property
+    def embedding_cache_path(self) -> Path:
+        path = Path(self.embedding_cache_dir)
+        return path if path.is_absolute() else REPO_ROOT / path
 
 
 def _host_set(value: str) -> frozenset[str]:
