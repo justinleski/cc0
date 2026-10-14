@@ -45,8 +45,9 @@ flowchart LR
   `addressing_style = path` into its AWS config before calling `create-bucket`,
   and the application clients pass `s3={"addressing_style": "path"}`.
 - Bucket creation is idempotent. `rustfs-init` runs `head-bucket` first and
-  exits 0 when `cc0` already exists, so a second run never creates a second
-  bucket.
+  exits 0 when `cc0` already exists. Only a missing-bucket response triggers
+  creation; other errors fail the init step. It heads the bucket again after
+  creation, so a second run never creates a second bucket.
 - The `vector` extension is enabled twice by design. `01-vector.sql` runs once
   per freshly created data volume, and the migration runs
   `CREATE EXTENSION IF NOT EXISTS vector` for the case where that init hook was

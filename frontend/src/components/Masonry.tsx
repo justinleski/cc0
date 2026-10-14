@@ -66,6 +66,7 @@ export function Masonry({
               >
                 <WorkTile
                   work={work}
+                  displayWidth={tileWidth}
                   move={
                     onMove
                       ? {

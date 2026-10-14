@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import type { Work } from "@/mock/catalog";
 
@@ -7,19 +8,36 @@ type MoveControls = {
   onMove: (direction: -1 | 1) => void;
 };
 
-export function WorkTile({ work, move }: { work: Work; move?: MoveControls }) {
+export function WorkTile({
+  work,
+  move,
+  displayWidth,
+}: {
+  work: Work;
+  move?: MoveControls;
+  displayWidth: number;
+}) {
+  const sizes = `${Math.ceil(displayWidth)}px`;
   return (
     <article className="work-tile">
       <Link className="work-tile__link" href={`/works/${work.id}`}>
-        <img
+        <Image
           className="work-tile__image"
           src={work.src}
           alt={work.alt}
           width={work.width}
           height={work.height}
+          sizes={sizes}
         />
         <span className="work-tile__blur-clip" aria-hidden="true">
-          <img className="work-tile__blur" src={work.src} alt="" width={work.width} height={work.height} />
+          <Image
+            className="work-tile__blur"
+            src={work.src}
+            alt=""
+            width={work.width}
+            height={work.height}
+            sizes={sizes}
+          />
         </span>
         <span className="work-tile__scrim" aria-hidden="true" />
         <p className="work-tile__title">{work.title}</p>

@@ -7,11 +7,14 @@ export function GuidedPath({ query, works }: { query: string; works: Work[] }) {
     <section className="mb-10" aria-label={`Results for ${query}`}>
       <h2 className="mb-4 text-xl leading-tight">Results for “{query}”</h2>
       <div className="path-row">
-        {works.map((work) => (
-          <div key={work.id} style={{ width: Math.round(220 * (work.width / work.height)) }}>
-            <WorkTile work={work} />
-          </div>
-        ))}
+        {works.map((work) => {
+          const displayWidth = Math.round(220 * (work.width / work.height));
+          return (
+            <div key={work.id} style={{ width: displayWidth }}>
+              <WorkTile work={work} displayWidth={displayWidth} />
+            </div>
+          );
+        })}
       </div>
     </section>
   );

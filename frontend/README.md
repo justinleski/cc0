@@ -13,7 +13,11 @@ Open http://127.0.0.1:3000. Search filters the mock catalog. A work page shows t
 
 Keep the board provider when persistence arrives: replace its sessionStorage
 operations with API calls without discarding the provider. Retain a small
-`public/works/` fixture; production image bytes will come from object storage.
+`public/works/` fixture; `next/image` optimizes these local images. Production
+image bytes will come from object storage. When switching to public object URLs,
+configure a narrow `images.remotePatterns` rule for that host and path; private
+or signed URLs need a loader or an unoptimized image because the default image
+optimizer does not forward authentication headers.
 
 [design/tokens/tokens.css](../design/tokens/tokens.css) is the token source of
 truth. Tailwind `@theme` in `src/app/globals.css` maps those variables.

@@ -63,10 +63,22 @@ services:
         set -eu
         mkdir -p /root/.aws
         printf '%s\n' '[default]' 's3 =' '    addressing_style = path' > /root/.aws/config
-        if aws s3api head-bucket --bucket "$$S3_BUCKET" --endpoint-url http://rustfs:9000; then
+        if head_output=$$(aws s3api head-bucket --bucket "$$S3_BUCKET" --endpoint-url http://rustfs:9000 2>&1); then
+          echo "RustFS bucket $$S3_BUCKET already exists"
           exit 0
         fi
+        case "$$head_output" in
+          *"(404) when calling the HeadBucket operation"*|*"(NoSuchBucket) when calling the HeadBucket operation"*)
+            echo "RustFS bucket $$S3_BUCKET is missing; creating it"
+            ;;
+          *)
+            printf '%s\n' "$$head_output" >&2
+            exit 1
+            ;;
+        esac
         aws s3api create-bucket --bucket "$$S3_BUCKET" --endpoint-url http://rustfs:9000
+        aws s3api head-bucket --bucket "$$S3_BUCKET" --endpoint-url http://rustfs:9000
+        echo "RustFS bucket $$S3_BUCKET is ready"
     restart: on-failure
 
 volumes:
