@@ -9,6 +9,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VENV=backend/.venv
+CHECK_FRONTEND=${RUN_FRONTEND_CHECKS:-true}
+
+case "$CHECK_FRONTEND" in
+    true|false) ;;
+    *) echo "RUN_FRONTEND_CHECKS must be true or false" >&2; exit 1 ;;
+esac
 
 step() {
     printf '\n== %s\n' "$1"
@@ -20,7 +26,7 @@ if [ ! -x "$VENV/bin/python" ]; then
     exit 1
 fi
 
-if [ ! -d frontend/node_modules ]; then
+if [ "$CHECK_FRONTEND" = true ] && [ ! -d frontend/node_modules ]; then
     echo "Missing frontend/node_modules. Install first:" >&2
     echo "  (cd frontend && npm ci)" >&2
     exit 1
@@ -32,11 +38,13 @@ step "backend lint"
 step "backend unit tests"
 "$VENV/bin/pytest" backend/tests/unit
 
-step "frontend type check"
-(cd frontend && npm run --silent typecheck)
+if [ "$CHECK_FRONTEND" = true ]; then
+    step "frontend type check"
+    (cd frontend && npm run --silent typecheck)
 
-step "frontend lint"
-(cd frontend && npm run --silent lint)
+    step "frontend lint"
+    (cd frontend && npm run --silent lint)
+fi
 
 if ! docker info >/dev/null 2>&1; then
     echo "Docker is not running. The integration tests need it:" >&2

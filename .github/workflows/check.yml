@@ -2,19 +2,43 @@ name: check
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 concurrency:
-  # head_ref is set for pull_request, so a PR and pushes to that branch share a
-  # group. Other branches use github.ref and are not cancelled by this run.
+  # Cancel older runs for the same PR or branch. Pushes run only on main, so a
+  # PR branch push does not create a second workflow run.
   group: check-${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    outputs:
+      frontend_changed: ${{ steps.frontend_changes.outputs.changed }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Detect frontend-impacting changes
+        id: frontend_changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # On a PR, HEAD is the test merge commit. Compare it with the base
+          # commit so the result includes all changes introduced by the PR.
+          # If the base is unavailable, run every check instead of skipping one.
+          if git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null &&
+             git diff --quiet "$BASE_SHA" HEAD -- . \
+               ':(exclude)backend/**' \
+               ':(exclude)docs/**' \
+               ':(exclude)README.md' \
+               ':(exclude)docker-compose.yml'; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/setup-python@v6
         with:
@@ -23,6 +47,7 @@ jobs:
           cache-dependency-path: backend/pyproject.toml
 
       - uses: actions/setup-node@v5
+        if: steps.frontend_changes.outputs.changed == 'true'
         with:
           node-version: "22"
           cache: npm
@@ -35,6 +60,7 @@ jobs:
           backend/.venv/bin/pip install -e "backend[dev]"
 
       - name: Install frontend
+        if: steps.frontend_changes.outputs.changed == 'true'
         run: npm ci
         working-directory: frontend
 
@@ -42,6 +68,8 @@ jobs:
       # script get real Postgres and RustFS instead of skipping.
       - name: Check
         run: ./scripts/check.sh
+        env:
+          RUN_FRONTEND_CHECKS: ${{ steps.frontend_changes.outputs.changed }}
 
       - name: Service logs on failure
         if: failure()
@@ -50,6 +78,7 @@ jobs:
   frontend-build:
     name: Production frontend build
     needs: check
+    if: needs.check.outputs.frontend_changed == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -63,6 +92,14 @@ jobs:
       - name: Install frontend
         run: npm ci
         working-directory: frontend
+
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: frontend/.next/cache
+          key: nextjs-${{ runner.os }}-node22-${{ hashFiles('frontend/package-lock.json') }}-${{ hashFiles('frontend/src/**', 'frontend/public/**', 'frontend/package.json', 'frontend/.nvmrc', 'frontend/next.config.ts', 'frontend/postcss.config.mjs', 'frontend/tsconfig.json', 'frontend/eslint.config.mjs', 'design/tokens/**') }}
+          restore-keys: |
+            nextjs-${{ runner.os }}-node22-${{ hashFiles('frontend/package-lock.json') }}-
 
       - name: Build frontend
         run: npm run build
