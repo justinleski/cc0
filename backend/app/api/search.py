@@ -10,15 +10,15 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.search.cursor import InvalidCursor
-from app.search.service import (
+from app.search.models import (
     AssetCard,
     AssetDetail,
     CreatorPage,
     RelatedHit,
     SearchPage,
-    SearchQueryError,
-    SearchService,
 )
+from app.search.repository import PostgresSearchRepository
+from app.search.service import SearchQueryError, SearchService
 
 router = APIRouter(prefix="/api/v1")
 
@@ -75,7 +75,10 @@ class CreatorResponseModel(BaseModel):
 
 
 def _service(request: Request) -> SearchService:
-    return SearchService(request.app.state.db_engine, request.app.state.embeddings)
+    return SearchService(
+        PostgresSearchRepository(request.app.state.db_engine),
+        request.app.state.embeddings,
+    )
 
 
 def _card(card: AssetCard) -> AssetCardModel:

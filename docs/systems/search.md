@@ -47,7 +47,19 @@ flowchart TD
 | [worker/embed.py](../../backend/app/worker/embed.py) | Claim, read the original, insert the vector, publish |
 | [search/parse.py](../../backend/app/search/parse.py) | Balanced phrases and stripped stray quotes |
 | [search/rank.py](../../backend/app/search/rank.py) | Reciprocal rank fusion |
-| [search/service.py](../../backend/app/search/service.py) | Filters, lexical rank, cosine, provenance view |
+| [search/service.py](../../backend/app/search/service.py) | Query validation, embeddings, rank fusion, cursors, and suggestions |
+| [search/repository.py](../../backend/app/search/repository.py) | Typed repository contract and PostgreSQL queries, filters, connection scopes, and row mapping |
+| [search/models.py](../../backend/app/search/models.py) | Shared search inputs and results, independent of database driver types |
+
+`SearchService` receives a `SearchRepository` and an embedding provider. Routes
+construct `PostgresSearchRepository` with the existing API engine; construction
+does not check out a connection. The service computes query vectors before
+requesting candidates, and the repository reads lexical and semantic candidates
+on one connection. Fusion and cursor snapshots stay in the service. Repository
+inputs are typed filters, parsed queries, and keyset positions, never SQL
+fragments. Card retrieval rechecks public visibility and preserves the requested
+ID order while omitting hidden assets. Creator lookup returns ranked names; the
+service decides whether to suggest one. Worker stores are separate and unchanged.
 
 ## What a row means
 

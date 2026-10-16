@@ -90,6 +90,12 @@ flowchart TB
   through `ready_assets`. Query text is encoded before a connection is checked
   out of this pool, and each process runs one encode at a time, so inference
   does not occupy a pooled connection.
+- Catalog routes construct `SearchService` with a `PostgresSearchRepository`
+  backed by that same engine and the process's embedding provider. The repository
+  owns SQL and row mapping; the service owns query parsing, embedding calls,
+  fusion, cursors, and suggestion decisions. Their shared inputs and results are
+  typed data classes in `app/search/models.py`. HTTP models and response formats
+  remain in `app/api/search.py`.
 - `statement_timeout` is `SET LOCAL` inside the probe transaction, not an
   engine-wide connection option, so a later request on the same connection
   does not inherit the readiness budget.

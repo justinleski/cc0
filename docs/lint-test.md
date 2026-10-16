@@ -63,6 +63,12 @@ deterministic fake provider and assert the vectors it returns, plus quote
 parsing, rank fusion, the fake identity, and object-body read failures.
 None of them opens a socket, downloads weights, or does a DNS lookup.
 
+`test_search_service.py` injects an in-memory repository to check browse
+keysets, encoding before candidate retrieval, quoted and mixed queries, rank
+fusion, cursor scope validation, suggestions, and snapshot positions when an
+asset is suppressed. SQL ranking and visibility remain integration-tested
+through the real PostgreSQL repository and HTTP routes.
+
 `python -m app.embeddings` loads OpenCLIP after `pip install -e "backend[embeddings]"`
 and checks that a related image/text pair outranks an unrelated one. It compares
 order, not bit-exact floats. The check script does not run it.
