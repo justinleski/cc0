@@ -19,11 +19,12 @@ from app.db.engine import create_worker_engine
 from app.embeddings.provider import FAKE_MODEL_KEY, FAKE_MODEL_VERSION, build_provider
 from app.ingestion.fixtures import FixtureSource
 from app.ingestion.met import MetAdapter
+from app.ingestion.repository import IngestionRepository
+from app.ingestion.service import IngestService
 from app.integrations.object_store import ObjectStore, create_s3_client
 from app.main import create_app
 from app.search.cursor import decode_cursor, encode_cursor
 from app.worker.embed import ALREADY_EMBEDDED, EMBEDDED, EmbedService
-from app.worker.ingest import IngestService
 from app.worker.jobs import JobStore
 from app.worker.store import CatalogStore
 from tests.integration.conftest import BACKEND_ROOT, CatalogDatabase
@@ -49,6 +50,7 @@ class ReadyCatalog:
         )
         objects = ObjectStore(client, settings.object_store_bucket)
         catalog_store = CatalogStore(self.engine)
+        self.ingestion_repository = IngestionRepository(self.engine)
         job_store = JobStore(self.engine)
         embeddings = build_provider(settings)
         self.embeddings = embeddings
@@ -57,7 +59,7 @@ class ReadyCatalog:
             adapter=MetAdapter(source),
             image_fetcher=source,
             object_store=objects,
-            catalog_store=catalog_store,
+            repository=self.ingestion_repository,
             job_store=job_store,
             embedding_model_key=embeddings.model_key,
             embedding_model_version=embeddings.model_version,
@@ -262,7 +264,7 @@ def _reject(catalog_under_test: ReadyCatalog, asset_id: str) -> None:
         asset_id=UUID(asset_id),
     )
     assert isinstance(source_id, UUID)
-    catalog_under_test.catalog.record_superseding_rights(
+    catalog_under_test.ingestion_repository.record_superseding_rights(
         source_id,
         rights_type=catalog.RIGHTS_REJECTED,
         verification_status=catalog.VERIFICATION_REJECTED,
@@ -289,10 +291,10 @@ def test_a_newer_rejection_unpublishes_the_asset(ready_catalog: ReadyCatalog) ->
             asset_id=UUID(harbor["id"]),
         )
         assert isinstance(source_id, UUID)
-        latest = ready_catalog.catalog.latest_evidence(source_id)
+        latest = ready_catalog.ingestion_repository.latest_evidence(source_id)
         assert latest is not None
         assert latest.rights_type == catalog.RIGHTS_REJECTED
-        assert ready_catalog.catalog.evidence_count(source_id) == 2
+        assert ready_catalog.ingestion_repository.evidence_count(source_id) == 2
         assert (
             ready_catalog.scalar(
                 "SELECT status FROM assets WHERE id = :asset_id",

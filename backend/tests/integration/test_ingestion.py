@@ -19,21 +19,21 @@ from uuid import UUID
 
 import psycopg
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 from app.core.config import Settings
 from app.db import catalog
 from app.db.engine import create_worker_engine
 from app.embeddings.provider import build_provider
+from app.ingestion import service as ingest_module
 from app.ingestion.errors import TransientFailure
 from app.ingestion.fetch import FetchedImage
 from app.ingestion.fixtures import FixtureSource
 from app.ingestion.met import MetAdapter
+from app.ingestion.repository import IngestionRepository
+from app.ingestion.service import IngestService
 from app.integrations.object_store import ObjectStore, create_s3_client
-from app.worker import ingest as ingest_module
-from app.worker.ingest import IngestService
 from app.worker.jobs import ClaimLost, JobStore, dedupe_key
-from app.worker.store import CatalogStore
 from tests.integration.conftest import BACKEND_ROOT, CatalogDatabase
 
 FIXTURE_ROOT = BACKEND_ROOT / "fixtures" / "met"
@@ -100,7 +100,7 @@ class Harness:
     source: FixtureSource
     objects: RecordingObjectStore
     job_store: JobStore
-    catalog_store: CatalogStore
+    repository: IngestionRepository
     engine: Any
     extra_services: list[IngestService] = field(default_factory=list)
 
@@ -111,7 +111,7 @@ class Harness:
             adapter=MetAdapter(self.source),
             image_fetcher=image_fetcher,
             object_store=self.objects,
-            catalog_store=self.catalog_store,
+            repository=self.repository,
             job_store=self.job_store,
             embedding_model_key=self.service.embedding_model_key,
             embedding_model_version=self.service.embedding_model_version,
@@ -191,7 +191,7 @@ def harness(
         image_hosts=settings.image_host_allowlist,
     )
     objects = RecordingObjectStore(client, settings.object_store_bucket)
-    catalog_store = CatalogStore(engine)
+    repository = IngestionRepository(engine)
     job_store = JobStore(engine)
     embeddings = build_provider(settings)
     harness = Harness(
@@ -202,7 +202,7 @@ def harness(
             adapter=MetAdapter(source),
             image_fetcher=source,
             object_store=objects,
-            catalog_store=catalog_store,
+            repository=repository,
             job_store=job_store,
             embedding_model_key=embeddings.model_key,
             embedding_model_version=embeddings.model_version,
@@ -210,7 +210,7 @@ def harness(
         source=source,
         objects=objects,
         job_store=job_store,
-        catalog_store=catalog_store,
+        repository=repository,
         engine=engine,
     )
     try:
@@ -449,7 +449,7 @@ def test_a_crash_after_the_object_write_resumes_without_a_second_download(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     crashed = {"done": False}
-    original = harness.catalog_store.store_asset
+    original = harness.repository.store_asset
 
     def crash_once(**kwargs):
         if not crashed["done"]:
@@ -459,7 +459,7 @@ def test_a_crash_after_the_object_write_resumes_without_a_second_download(
             raise TransientFailure("object_store", "simulated crash before commit")
         return original(**kwargs)
 
-    monkeypatch.setattr(harness.catalog_store, "store_asset", crash_once)
+    monkeypatch.setattr(harness.repository, "store_asset", crash_once)
     harness.service.enqueue(["100003"])
 
     first = harness.service.drain()
@@ -491,14 +491,14 @@ def test_a_killed_worker_resumes_after_its_lease_expires_without_a_second_downlo
     harness: Harness,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original = harness.catalog_store.store_asset
+    original = harness.repository.store_asset
 
     def killed(**kwargs):
         raise WorkerKilled
 
     # Both objects are written and the asset row is not: the process dies with
     # no chance to record a retry, so the row is left leased.
-    monkeypatch.setattr(harness.catalog_store, "store_asset", killed)
+    monkeypatch.setattr(harness.repository, "store_asset", killed)
     harness.service.enqueue(["100006"])
     with pytest.raises(WorkerKilled):
         harness.service.drain()
@@ -506,7 +506,7 @@ def test_a_killed_worker_resumes_after_its_lease_expires_without_a_second_downlo
     assert len(harness.objects.puts) == 2
 
     # A live lease is not taken from a worker that may still be running.
-    monkeypatch.setattr(harness.catalog_store, "store_asset", original)
+    monkeypatch.setattr(harness.repository, "store_asset", original)
     assert harness.service.drain() == []
 
     harness.expire_lease("100006")
@@ -528,7 +528,7 @@ def test_a_job_that_keeps_killing_the_worker_is_dead_lettered(
     def killed(**kwargs):
         raise WorkerKilled
 
-    monkeypatch.setattr(harness.catalog_store, "store_asset", killed)
+    monkeypatch.setattr(harness.repository, "store_asset", killed)
     harness.service.enqueue(["100007"])
     for _ in range(harness.settings.ingest_max_attempts):
         with pytest.raises(WorkerKilled):
@@ -647,13 +647,13 @@ def test_a_stale_claim_cannot_overwrite_the_worker_that_reclaimed_it(harness: Ha
     current = harness.job("100009")
     assert (current.state, current.last_error) == (catalog.JOB_LEASED, None)
 
-    record = harness.catalog_store.get_source_record(
+    record = harness.repository.get_source_record(
         UUID(str(first.payload["provider_id"])),
         "100009",
     )
     assert record is not None
     with pytest.raises(ClaimLost):
-        harness.catalog_store.record_rights_decision(
+        harness.repository.record_rights_decision(
             record,
             job=first,
             classification=catalog.RIGHTS_CC0,
@@ -710,3 +710,66 @@ def test_fixture_catalog_is_the_recorded_shape(harness: Harness) -> None:
     # Discovery reads the catalog only. No item metadata, no image.
     assert len(harness.source.metadata_requests) == 1
     assert harness.source.image_requests == []
+
+
+@pytest.mark.parametrize("failed_write", ["INSERT INTO jobs", "UPDATE jobs SET state ="])
+def test_asset_transaction_failure_rolls_back_and_resumes_from_objects(
+    harness: Harness, failed_write: str,
+) -> None:
+    """A late failure must not commit a creator, asset, embed job, or success."""
+    harness.service.enqueue(["100001"])
+    job = harness.job_store.claim(lease_seconds=harness.settings.ingest_lease_seconds)
+    assert job is not None
+
+    def fail_write(connection, cursor, statement, parameters, context, executemany):
+        if " ".join(statement.split()).startswith(failed_write):
+            raise RuntimeError("simulated transaction failure")
+
+    event.listen(harness.engine, "before_cursor_execute", fail_write)
+    try:
+        with pytest.raises(RuntimeError, match="simulated transaction failure"):
+            harness.service.run_claimed(job)
+    finally:
+        event.remove(harness.engine, "before_cursor_execute", fail_write)
+
+    assert harness.scalar("SELECT count(*) FROM creators") == 0
+    assert harness.scalar("SELECT count(*) FROM assets") == 0
+    assert harness.scalar("SELECT count(*) FROM jobs WHERE kind = 'embed'") == 0
+    assert harness.job("100001").state == catalog.JOB_LEASED
+    # Rights and objects completed outside the asset transaction and survive.
+    assert harness.scalar("SELECT count(*) FROM rights_evidence") == 1
+    assert len(harness.source.image_requests) == 1
+    assert len(harness.objects.puts) == 2
+
+    harness.expire_lease("100001")
+    assert [outcome.result for outcome in harness.service.drain()] == [ingest_module.RESUMED]
+    assert harness.job("100001").state == catalog.JOB_SUCCEEDED
+    assert harness.scalar("SELECT count(*) FROM assets") == 1
+    assert harness.scalar("SELECT count(*) FROM jobs WHERE kind = 'embed'") == 1
+    assert len(harness.source.image_requests) == 1
+    assert len(harness.source.metadata_requests) == 1
+    assert len(harness.objects.puts) == 2
+
+
+def test_evidence_insert_failure_rolls_back_source_decision_before_fetch(harness: Harness) -> None:
+    harness.service.enqueue(["100001"])
+
+    def fail_evidence(connection, cursor, statement, parameters, context, executemany):
+        if " ".join(statement.split()).startswith("INSERT INTO rights_evidence"):
+            raise RuntimeError("simulated evidence failure")
+
+    event.listen(harness.engine, "before_cursor_execute", fail_evidence)
+    try:
+        with pytest.raises(RuntimeError, match="simulated evidence failure"):
+            harness.service.drain()
+    finally:
+        event.remove(harness.engine, "before_cursor_execute", fail_evidence)
+
+    record = harness.repository.get_source_record(harness.service.provider_id, "100001")
+    assert record is not None
+    assert record.eligibility_status == catalog.ELIGIBILITY_DISCOVERED
+    assert record.raw_metadata == {}
+    assert harness.repository.evidence_count(record.id) == 0
+    assert harness.source.image_requests == []
+    assert harness.objects.puts == []
+    assert harness.job("100001").state == catalog.JOB_LEASED
