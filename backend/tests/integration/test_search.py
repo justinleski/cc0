@@ -6,17 +6,20 @@ not load OpenCLIP.
 """
 
 from collections.abc import Iterator
-from uuid import UUID
+from dataclasses import replace
+from uuid import UUID, uuid4
 
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 from app.core.config import Settings
 from app.db import catalog
 from app.db.engine import create_worker_engine
 from app.embeddings.provider import FAKE_MODEL_KEY, FAKE_MODEL_VERSION, build_provider
+from app.embeddings.repository import EmbeddingRepository
+from app.embeddings.service import ALREADY_EMBEDDED, EMBEDDED, EmbedService
 from app.ingestion.fixtures import FixtureSource
 from app.ingestion.met import MetAdapter
 from app.ingestion.repository import IngestionRepository
@@ -24,9 +27,7 @@ from app.ingestion.service import IngestService
 from app.integrations.object_store import ObjectStore, create_s3_client
 from app.main import create_app
 from app.search.cursor import decode_cursor, encode_cursor
-from app.worker.embed import ALREADY_EMBEDDED, EMBEDDED, EmbedService
-from app.worker.jobs import JobStore
-from app.worker.store import CatalogStore
+from app.worker.jobs import ClaimLost, JobStore
 from tests.integration.conftest import BACKEND_ROOT, CatalogDatabase
 
 FIXTURE_ROOT = BACKEND_ROOT / "fixtures" / "met"
@@ -49,7 +50,7 @@ class ReadyCatalog:
             image_hosts=settings.image_host_allowlist,
         )
         objects = ObjectStore(client, settings.object_store_bucket)
-        catalog_store = CatalogStore(self.engine)
+        catalog_store = EmbeddingRepository(self.engine)
         self.ingestion_repository = IngestionRepository(self.engine)
         job_store = JobStore(self.engine)
         embeddings = build_provider(settings)
@@ -68,7 +69,7 @@ class ReadyCatalog:
             settings=settings,
             embeddings=embeddings,
             object_store=objects,
-            catalog_store=catalog_store,
+            repository=catalog_store,
             job_store=job_store,
         )
         self.job_store = job_store
@@ -141,6 +142,72 @@ def test_embed_publishes_ready_and_a_repeat_does_not_write_a_second_vector(
     repeated = ready_catalog.embed.drain()
     assert repeated == [] or {outcome.result for outcome in repeated} <= {ALREADY_EMBEDDED}
     assert ready_catalog.scalar(f"SELECT count(*) FROM {catalog.EMBEDDINGS_TABLE}") == 2
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("failure", ["settlement", "lost_claim"])
+def test_embed_publication_rolls_back_and_respects_claim_fence(
+    ready_catalog: ReadyCatalog, existing: bool, failure: str
+) -> None:
+    if existing:
+        _publish(ready_catalog, [HARBOR])
+    else:
+        assert ready_catalog.ingest.enqueue([HARBOR]) == {}
+        ready_catalog.ingest.drain()
+    asset_id = ready_catalog.scalar("SELECT id FROM assets")
+    assert isinstance(asset_id, UUID)
+    initial_vectors = 1 if existing else 0
+    if existing:
+        with ready_catalog.engine.begin() as connection:
+            connection.execute(
+                text("UPDATE assets SET status = :stored WHERE id = :asset_id"),
+                {"stored": catalog.ASSET_STORED, "asset_id": asset_id},
+            )
+        assert ready_catalog.job_store.enqueue(
+            f"embed:retry-probe:{uuid4()}",
+            {"asset_id": str(asset_id), "model_key": FAKE_MODEL_KEY,
+             "model_version": FAKE_MODEL_VERSION, "original_key": "unused"},
+            max_attempts=4,
+            kind=catalog.JOB_KIND_EMBED,
+        )
+    job = ready_catalog.job_store.claim(
+        lease_seconds=60, kind=catalog.JOB_KIND_EMBED,
+        model_key=FAKE_MODEL_KEY, model_version=FAKE_MODEL_VERSION,
+    )
+    assert job is not None
+    if failure == "lost_claim":
+        job = replace(job, claim_token=uuid4())
+
+    def fail_settlement(conn, cursor, statement, parameters, context, executemany):
+        if "UPDATE jobs SET" in statement:
+            raise RuntimeError("settlement failed")
+
+    if failure == "settlement":
+        event.listen(ready_catalog.engine, "before_cursor_execute", fail_settlement)
+    try:
+        with pytest.raises(ClaimLost if failure == "lost_claim" else RuntimeError):
+            if existing:
+                ready_catalog.catalog.publish_existing_embedding(job, asset_id)
+            else:
+                ready_catalog.catalog.save_embedding(
+                    job=job, asset_id=asset_id,
+                    model_key=FAKE_MODEL_KEY, model_version=FAKE_MODEL_VERSION,
+                    dimensions=512, vector=[0.0] * 512,
+                )
+    finally:
+        if failure == "settlement":
+            event.remove(ready_catalog.engine, "before_cursor_execute", fail_settlement)
+
+    assert ready_catalog.scalar(
+        "SELECT status FROM assets WHERE id = :asset_id", asset_id=asset_id
+    ) == catalog.ASSET_STORED
+    assert (
+        ready_catalog.scalar(f"SELECT count(*) FROM {catalog.EMBEDDINGS_TABLE}")
+        == initial_vectors
+    )
+    assert ready_catalog.scalar(
+        "SELECT state FROM jobs WHERE id = :job_id", job_id=job.id
+    ) == catalog.JOB_LEASED
 
 
 def test_search_requires_quotes_filters_exactly_and_hides_the_negative_cache(
@@ -253,7 +320,7 @@ def _embed_for(
             catalog_under_test._s3,
             catalog_under_test.settings.object_store_bucket,
         ),
-        catalog_store=catalog_under_test.catalog,
+        repository=catalog_under_test.catalog,
         job_store=catalog_under_test.job_store,
     )
 

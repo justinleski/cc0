@@ -17,8 +17,8 @@ import sys
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db import catalog
+from app.embeddings.models import EmbedOutcome
 from app.ingestion.models import IngestOutcome
-from app.worker.embed import EmbedOutcome
 from app.worker.runtime import WorkerRuntime, build_runtime
 
 logger = logging.getLogger("cc0.worker")

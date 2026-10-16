@@ -18,15 +18,15 @@ from sqlalchemy import Engine
 from app.core.config import Settings
 from app.db.engine import create_worker_engine
 from app.embeddings.provider import EmbeddingProvider, build_provider
+from app.embeddings.repository import EmbeddingRepository
+from app.embeddings.service import EmbedService
 from app.ingestion.fetch import HttpImageFetcher, HttpJsonSource, Pacer
 from app.ingestion.fixtures import FixtureSource
 from app.ingestion.met import MetAdapter
 from app.ingestion.repository import IngestionRepository
 from app.ingestion.service import IngestService
 from app.integrations.object_store import ObjectStore, create_s3_client
-from app.worker.embed import EmbedService
 from app.worker.jobs import JobStore
-from app.worker.store import CatalogStore
 
 
 @dataclass
@@ -81,7 +81,7 @@ def build_runtime(settings: Settings) -> WorkerRuntime:
         closers.extend([json_source.close, image_fetcher.close])
 
     job_store = JobStore(engine)
-    catalog_store = CatalogStore(engine)
+    embedding_repository = EmbeddingRepository(engine)
     object_store = ObjectStore(s3, settings.object_store_bucket)
     embeddings = build_provider(settings)
     service = IngestService(
@@ -98,7 +98,7 @@ def build_runtime(settings: Settings) -> WorkerRuntime:
         settings=settings,
         embeddings=embeddings,
         object_store=object_store,
-        catalog_store=catalog_store,
+        repository=embedding_repository,
         job_store=job_store,
     )
     return WorkerRuntime(
