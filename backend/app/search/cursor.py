@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from app.search.models import BrowsePosition
 from app.search.rank import RANK_SNAPSHOT_LIMIT
 
 
@@ -50,9 +51,7 @@ def decode_cursor(value: str) -> dict[str, Any]:
 
 
 def browse_cursor(ingested_at: datetime, asset_id: UUID) -> str:
-    return encode_cursor(
-        {"t": "browse", "at": ingested_at.isoformat(), "id": str(asset_id)}
-    )
+    return encode_cursor({"t": "browse", "at": ingested_at.isoformat(), "id": str(asset_id)})
 
 
 def rank_cursor(snapshot: RankSnapshot) -> str:
@@ -150,4 +149,34 @@ def _uuid(value: Any) -> UUID:
     try:
         return UUID(value)
     except ValueError as exc:
+        raise InvalidCursor() from exc
+
+
+def require_same_scope(snapshot: RankSnapshot, scope: RankSnapshot) -> None:
+    if (
+        snapshot.applied_query != scope.applied_query
+        or snapshot.phrases != scope.phrases
+        or snapshot.unquoted != scope.unquoted
+        or snapshot.creator_id != scope.creator_id
+        or snapshot.location != scope.location
+        or snapshot.year_from != scope.year_from
+        or snapshot.year_to != scope.year_to
+        or snapshot.model_key != scope.model_key
+        or snapshot.model_version != scope.model_version
+    ):
+        raise InvalidCursor()
+
+
+def expect_cursor(cursor: str, kind: str) -> dict[str, Any]:
+    payload = decode_cursor(cursor)
+    if payload.get("t") != kind:
+        raise InvalidCursor()
+    return payload
+
+
+def parse_browse_cursor(cursor: str) -> BrowsePosition:
+    payload = expect_cursor(cursor, "browse")
+    try:
+        return BrowsePosition(datetime.fromisoformat(payload["at"]), UUID(payload["id"]))
+    except (KeyError, TypeError, ValueError) as exc:
         raise InvalidCursor() from exc

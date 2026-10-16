@@ -17,7 +17,7 @@ from app.search.models import (
     RelatedHit,
     SearchPage,
 )
-from app.search.repository import PostgresSearchRepository
+from app.search.repository import SearchRepository
 from app.search.service import SearchQueryError, SearchService
 
 router = APIRouter(prefix="/api/v1")
@@ -76,7 +76,7 @@ class CreatorResponseModel(BaseModel):
 
 def _service(request: Request) -> SearchService:
     return SearchService(
-        PostgresSearchRepository(request.app.state.db_engine),
+        SearchRepository(request.app.state.db_engine),
         request.app.state.embeddings,
     )
 

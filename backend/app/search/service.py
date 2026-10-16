@@ -4,22 +4,20 @@ Persistence lives behind SearchRepository. Text is encoded before repository
 candidate retrieval so inference never holds a pooled database connection.
 """
 
-from datetime import datetime
-from typing import Any
 from uuid import UUID
 
 from app.embeddings.provider import EmbeddingProvider
 from app.search.cursor import (
-    InvalidCursor,
     RankSnapshot,
     browse_cursor,
-    decode_cursor,
+    expect_cursor,
+    parse_browse_cursor,
     parse_rank_cursor,
     rank_cursor,
+    require_same_scope,
 )
 from app.search.models import (
     AssetDetail,
-    BrowsePosition,
     CreatorPage,
     RelatedHit,
     SearchFilters,
@@ -89,15 +87,7 @@ class SearchService:
         cursor: str | None,
         applied: str,
     ) -> SearchPage:
-        after = None
-        if cursor is not None:
-            payload = _expect_cursor(cursor, "browse")
-            try:
-                cursor_at = datetime.fromisoformat(payload["at"])
-                cursor_id = UUID(payload["id"])
-                after = BrowsePosition(cursor_at, cursor_id)
-            except (KeyError, TypeError, ValueError) as exc:
-                raise InvalidCursor() from exc
+        after = parse_browse_cursor(cursor) if cursor is not None else None
         cards = self._repository.browse(filters, limit + 1, after)
         page, more = cards[:limit], len(cards) > limit
         next_cursor = browse_cursor(page[-1].ingested_at, page[-1].id) if more and page else None
@@ -122,8 +112,8 @@ class SearchService:
             model_version=self._embeddings.model_version,
         )
         if cursor is not None:
-            snapshot = parse_rank_cursor(_expect_cursor(cursor, "rank"))
-            _require_same_scope(snapshot, scope)
+            snapshot = parse_rank_cursor(expect_cursor(cursor, "rank"))
+            require_same_scope(snapshot, scope)
             return self._page_snapshot(
                 list(snapshot.ids),
                 snapshot.offset,
@@ -217,25 +207,3 @@ def _rank_scope(
         ids=(),
         offset=0,
     )
-
-
-def _require_same_scope(snapshot: RankSnapshot, scope: RankSnapshot) -> None:
-    if (
-        snapshot.applied_query != scope.applied_query
-        or snapshot.phrases != scope.phrases
-        or snapshot.unquoted != scope.unquoted
-        or snapshot.creator_id != scope.creator_id
-        or snapshot.location != scope.location
-        or snapshot.year_from != scope.year_from
-        or snapshot.year_to != scope.year_to
-        or snapshot.model_key != scope.model_key
-        or snapshot.model_version != scope.model_version
-    ):
-        raise InvalidCursor()
-
-
-def _expect_cursor(cursor: str, kind: str) -> dict[str, Any]:
-    payload = decode_cursor(cursor)
-    if payload.get("t") != kind:
-        raise InvalidCursor()
-    return payload

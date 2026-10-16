@@ -4,12 +4,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
-from app.api.search import router as search_router
 from app.core.config import Settings, get_settings
 from app.core.logging import RequestContextMiddleware, configure_logging
 from app.db.engine import create_api_engine
 from app.embeddings.provider import build_provider
 from app.integrations.object_store import create_s3_client
+from app.search.router import router as search_router
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
