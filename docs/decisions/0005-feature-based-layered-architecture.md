@@ -65,9 +65,9 @@ SQL explicit in Python alongside its parameter builders.
 Apply this convention to new backend features. Migrate existing features
 incrementally when substantive work warrants it, preserving their behavior.
 [Ingestion](../systems/ingestion.md#layers-and-transaction-boundaries) now uses
-feature-local service, repository, queries and models. Shared job/lease
-mechanics and embedding persistence retain their worker boundaries for
-incremental migration. Frontend
+feature-local service, repository, queries and models. The embedding job path
+uses the same feature-local layers under `app/embeddings/`. Shared job and lease
+mechanics retain their worker boundaries. Frontend
 organization is outside this decision.
 
 For search, preserve the existing HTTP routes, response shapes, error behavior,

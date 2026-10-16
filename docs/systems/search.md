@@ -1,7 +1,7 @@
 # Search and embeddings
 
 Status: Implemented (M2: default fake provider, OpenCLIP optional and unpinned)
-Owner: [backend/app/embeddings/](../../backend/app/embeddings/provider.py), [backend/app/search/](../../backend/app/search/service.py), [backend/app/worker/embed.py](../../backend/app/worker/embed.py), [migration 0006](../../backend/migrations/versions/0006_embeddings.py)
+Owner: [backend/app/embeddings/](../../backend/app/embeddings/service.py), [backend/app/search/](../../backend/app/search/service.py), [migration 0006](../../backend/migrations/versions/0006_embeddings.py)
 Depends on: PostgreSQL pgvector, RustFS, the M1 catalog
 Related: [ingestion.md](ingestion.md), [storage.md](storage.md), [api.md](api.md), [ADR-0002](../decisions/0002-postgres-pgvector.md), [MVP spec M2](../mvp-spec.md#milestone-m2--image-embeddings-and-hybrid-search)
 
@@ -95,14 +95,23 @@ The changes are structural. HTTP interfaces, cursor formats, ranking semantics,
 error behavior, views, and database grants are preserved. The internal service
 constructor accepts a concrete repository instead of an engine. SQL is kept in
 Python for review alongside its parameter builders; external SQL files and
-stored functions are unnecessary here. Ingestion and worker stores retain their
-existing boundaries; this layout is the completed search refactor, not a claim
-that every feature has already been reorganized.
+stored functions are unnecessary here. Ingestion and embedding jobs now use
+feature-local layers too; shared worker job and lease machinery stays in the
+worker package.
 
-The embedding subsystem remains separate:
-[provider.py](../../backend/app/embeddings/provider.py) defines the provider and
-fake, [openclip.py](../../backend/app/embeddings/openclip.py) loads the optional
-model, and [worker/embed.py](../../backend/app/worker/embed.py) publishes vectors.
+Embedding jobs use the same feature-local layering:
+[service.py](../../backend/app/embeddings/service.py) orchestrates claim processing,
+object reads, inference and retries; [models.py](../../backend/app/embeddings/models.py)
+holds the result and asset dataclasses; [repository.py](../../backend/app/embeddings/repository.py)
+owns connection scopes and claim-fenced writes; and
+[queries.py](../../backend/app/embeddings/queries.py) holds SQL and bound-parameter
+construction. [provider.py](../../backend/app/embeddings/provider.py) defines
+the provider and fake, while [openclip.py](../../backend/app/embeddings/openclip.py)
+loads the optional model. The worker runtime supplies the concrete repository,
+shared job store and object store. Both the new-vector and existing-vector
+paths lock the claim, publish the asset, and settle the job in one transaction.
+Object reads and inference happen after read connections close and before the
+write transaction starts.
 
 ### Verification
 
@@ -114,6 +123,10 @@ connection release when a candidate query fails. Existing PostgreSQL integration
 tests remain the authority for executed SQL, rights revocation, and related
 visibility. Commands and infrastructure requirements are in
 [Lint and tests](../lint-test.md).
+`test_embedding_service.py` checks object and inference ordering, while
+`test_embedding_repository.py` checks bound parameters and transaction cleanup.
+The PostgreSQL search tests exercise rollback and claim fencing for both
+publication paths.
 
 ## What a row means
 

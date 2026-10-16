@@ -59,7 +59,7 @@ flowchart TD
 | [worker/jobs.py](../../backend/app/worker/jobs.py) | Claim, lease, retry, dead letter, redrive |
 | [worker/lease.py](../../backend/app/worker/lease.py) | Background claim renewal and deadline checks |
 | [worker/runtime.py](../../backend/app/worker/runtime.py) | Injects the shared worker engine, job store, provider clients and object store |
-| [worker/store.py](../../backend/app/worker/store.py) | Embedding persistence retained for a separate incremental refactor |
+| [embeddings/repository.py](../../backend/app/embeddings/repository.py) | Embedding persistence and claim-fenced publication |
 
 ### Layers and transaction boundaries
 
@@ -102,8 +102,9 @@ exhaustion reconciliation remain in `JobStore`.
 its constructor now takes `repository=IngestionRepository(engine)` instead of
 `catalog_store=`. `IngestOutcome` moved to `app.ingestion.models`. Ingestion
 catalog methods and their models moved from `worker.store` into the ingestion
-repository and models. Embedding retains `CatalogStore`. The private
-`worker.store._hold_claim` helper is now shared as `worker.jobs.hold_claim`.
+repository and models. Embedding persistence now lives in
+`app.embeddings.repository.EmbeddingRepository`. The private
+`worker.store._hold_claim` helper is shared as `worker.jobs.hold_claim`.
 Runtime, CLI and integration callers use the new imports. Operator commands,
 result tokens, rights rules, SQL semantics, pools and schemas are unchanged;
 there are no intentional behavior changes.

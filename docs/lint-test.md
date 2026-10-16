@@ -80,6 +80,12 @@ image fetch, cache/asset skips, durable resume, retries and claim loss, bound
 parameters, and connection cleanup and rollback for atomic catalog/job writes.
 They do not replace the real database tests for transaction or fencing semantics.
 
+Embedding boundary tests (`test_embedding_service.py` and
+`test_embedding_repository.py`) check object read and inference ordering,
+existing-vector skips, claim-fenced write order, rollback, and connection
+release. `test_search.py` also checks rollback and stale claims for new and
+existing vectors against PostgreSQL.
+
 `python -m app.embeddings` loads OpenCLIP after `pip install -e "backend[embeddings]"`
 and checks that a related image/text pair outranks an unrelated one. It compares
 order, not bit-exact floats. The check script does not run it.
