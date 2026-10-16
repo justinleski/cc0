@@ -37,7 +37,8 @@ evolve.
   FastAPI health, readiness, and catalog routes, configuration, request logging, pools.
 - [Ingestion](systems/ingestion.md)
   Met adapter, rights gate, fetch gate, the job row as dead letter, resume
-  rules, and operator commands.
+  rules, operator commands, feature-local layers, transaction boundaries, and
+  completed refactor validation results.
 - [Search and embeddings](systems/search.md)
   The embed job, hybrid ranking, quoted phrases, public provenance view, and
   a code-reading guide to the feature-local service/repository/query layers.

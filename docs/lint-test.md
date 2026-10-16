@@ -74,6 +74,12 @@ identity, candidate limits, and ordering. `test_search_repository.py` verifies
 that inference precedes checkout, both candidate queries share a connection,
 and failures release that connection.
 
+Ingestion boundary tests (`test_ingestion_service.py`,
+`test_ingestion_queries.py`, `test_ingestion_repository.py`) check rights before
+image fetch, cache/asset skips, durable resume, retries and claim loss, bound
+parameters, and connection cleanup and rollback for atomic catalog/job writes.
+They do not replace the real database tests for transaction or fencing semantics.
+
 `python -m app.embeddings` loads OpenCLIP after `pip install -e "backend[embeddings]"`
 and checks that a related image/text pair outranks an unrelated one. It compares
 order, not bit-exact floats. The check script does not run it.
@@ -108,7 +114,10 @@ run means the stack really answered. They are the acceptance check through M2:
   appends evidence; transient failures retry and then dead-letter; refused
   images are dead on the first attempt; dead jobs survive a repeat ingest and
   redrive; and a crash after the object writes, including a killed worker whose
-  lease expires, resumes without a second download. It migrates its own
+  lease expires, resumes without a second download. Injected evidence failures
+  roll back the source decision before fetch; failures at embed enqueue or job
+  success roll back the entire asset transaction and then resume from objects.
+  It migrates its own
   database per module and writes to a `cc0-test-*` bucket per test, so the
   operator's catalog and `cc0` bucket are never touched.
 - `test_search.py` embeds CC0 fixtures with the fake provider while

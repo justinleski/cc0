@@ -1,7 +1,7 @@
 # Ingestion
 
 Status: Implemented (M1: one provider, fixture-replayed by default)
-Owner: [backend/app/ingestion/](../../backend/app/ingestion/rights.py), [backend/app/worker/](../../backend/app/worker/ingest.py), [migration 0003](../../backend/migrations/versions/0003_catalog.py)
+Owner: [backend/app/ingestion/](../../backend/app/ingestion/service.py), [backend/app/worker/](../../backend/app/worker/runtime.py), [migration 0003](../../backend/migrations/versions/0003_catalog.py)
 Depends on: PostgreSQL, RustFS
 Related: [storage.md](storage.md), [api.md](api.md), [ADR-0003](../decisions/0003-database-roles.md), [ADR-0004](../decisions/0004-host-processes.md), [MVP spec M1](../mvp-spec.md#milestone-m1--ingestion-and-provenance-vertical-slice)
 
@@ -52,9 +52,61 @@ flowchart TD
 | [fetch.py](../../backend/app/ingestion/fetch.py) | URL validation, public-address check, image and metadata HTTP clients, pacing |
 | [images.py](../../backend/app/ingestion/images.py) | Bounded decode, SHA-256, WebP thumbnail |
 | [fixtures.py](../../backend/app/ingestion/fixtures.py) | Recorded responses with the same allowlist rules, plus a request log |
-| [worker/ingest.py](../../backend/app/worker/ingest.py) | The pipeline and its skip rules |
+| [service.py](../../backend/app/ingestion/service.py) | Discovery, enqueue/skip decisions, rights/fetch sequencing, resume and retry orchestration |
+| [repository.py](../../backend/app/ingestion/repository.py) | Connection scopes, typed row mapping, atomic catalog and job writes |
+| [queries.py](../../backend/app/ingestion/queries.py) | Parameterized SQL and pure JSON parameter builders; no I/O |
+| [models.py](../../backend/app/ingestion/models.py) | SourceRecord, Asset, Evidence, and IngestOutcome dataclasses; no HTTP or driver types |
 | [worker/jobs.py](../../backend/app/worker/jobs.py) | Claim, lease, retry, dead letter, redrive |
-| [worker/store.py](../../backend/app/worker/store.py) | Catalog reads and writes |
+| [worker/lease.py](../../backend/app/worker/lease.py) | Background claim renewal and deadline checks |
+| [worker/runtime.py](../../backend/app/worker/runtime.py) | Injects the shared worker engine, job store, provider clients and object store |
+| [worker/store.py](../../backend/app/worker/store.py) | Embedding persistence retained for a separate incremental refactor |
+
+### Layers and transaction boundaries
+
+Following [ADR-0005](../decisions/0005-feature-based-layered-architecture.md),
+the worker CLI calls `IngestService`, which uses the concrete
+`IngestionRepository`, which executes feature-local query builders. Rights,
+metadata normalization, and image processing stay in focused modules. Services
+also coordinate external clients and the shared `JobStore`; repositories never
+call those clients. `models.py` uses the shared catalog vocabulary, which has no
+infrastructure dependencies.
+
+`build_runtime()` supplies `IngestionRepository(engine)` using the existing
+worker pool. Construction opens no connection. Every repository operation owns
+its connection scope and returns dataclasses or scalar results. Metadata/image
+HTTP, image processing, object HEADs, and both object PUTs occur between catalog
+operations, outside their connections. Lease renewal uses a separate short
+connection as before.
+
+Atomic writes retain their original boundaries:
+
+- `record_rights_decision()` locks the current claim, updates source metadata
+  and the database-clock recheck deadline, appends evidence, and applies any
+  suppression in one transaction. It commits before an image request.
+- `record_superseding_rights()` appends evidence and suppresses an asset in one
+  transaction when the decision is not verified CC0.
+- `store_asset()` locks the current claim, upserts the creator, inserts the
+  asset, enqueues its model-scoped embed job, and settles ingestion success in
+  one transaction. A duplicate asset still settles ingestion without another
+  embed enqueue. Any failure rolls back the whole operation.
+
+The shared `worker.jobs.hold_claim(connection, job)` receives that transaction's
+connection. Its token, state, unexpired-lease predicate and `FOR UPDATE` lock
+prevent a stale attempt from writing. It must not be replaced with a separate
+committing job-store call. Other job claims, backoff, rechecks, redrive and
+exhaustion reconciliation remain in `JobStore`.
+
+### Internal interface migration
+
+`app.worker.ingest.IngestService` moved to `app.ingestion.service.IngestService`;
+its constructor now takes `repository=IngestionRepository(engine)` instead of
+`catalog_store=`. `IngestOutcome` moved to `app.ingestion.models`. Ingestion
+catalog methods and their models moved from `worker.store` into the ingestion
+repository and models. Embedding retains `CatalogStore`. The private
+`worker.store._hold_claim` helper is now shared as `worker.jobs.hold_claim`.
+Runtime, CLI and integration callers use the new imports. Operator commands,
+result tokens, rights rules, SQL semantics, pools and schemas are unchanged;
+there are no intentional behavior changes.
 
 ## What a row means
 
@@ -117,7 +169,7 @@ flowchart TD
   transaction that marks it `STORED`, enqueues the embed job, and marks the
   ingest job `succeeded`.
 - A record that already has bytes (`STORED`, `READY`, or `SUPPRESSED`) is not
-  sent back through the rights gate. `CatalogStore.record_superseding_rights`
+  sent back through the rights gate. `IngestionRepository.record_superseding_rights`
   appends a later decision and, when that decision is not verified CC0, sets
   the asset `SUPPRESSED` in the same transaction. Public queries use the latest
   evidence row and the status together. See [search](search.md).
@@ -252,3 +304,41 @@ bytes.
 - The `Pacer` spaces requests within one process. Replicas would need a shared
   token bucket.
 - An HTTP-date `Retry-After` falls back to computed backoff.
+
+## Refactor validation
+
+The interrupted ingestion extraction has been reviewed against the original
+service and persistence code. Focused unit tests cover orchestration ordering,
+negative-cache and stored-asset skips, evidence/object reuse, object-store
+failure, retries, and lost claims. Repository tests exercise connection release,
+claim fencing, and rollback at each write in the atomic operations; query tests
+check bound values, JSON payloads, ordering and database-clock deadlines.
+Existing ingestion and search integration scenarios remain in place with their
+internal imports updated. Added real-database failure tests verify that an
+evidence insert failure rolls back the source decision before any image fetch,
+and that failures at embed enqueue or ingest success roll back the creator,
+asset, embed job and success together. After lease expiry, the latter tests
+verify that retries reuse the surviving objects without another download.
+
+Validation on 2026-10-16:
+
+- `backend/.venv/bin/ruff check backend`: passed.
+- `backend/.venv/bin/pytest backend/tests/unit`: 175 passed.
+- `backend/.venv/bin/pytest backend/tests/integration`: 37 passed against real
+  PostgreSQL/pgvector and RustFS, with fixture provider responses.
+- `git diff --check`: passed. Extracted SQL constants match the original SQL
+  after whitespace normalization.
+
+The initial RustFS blocker was resolved by starting Docker Desktop and the
+repository's existing Compose RustFS service and bucket initializer. The server
+already on port 5432 rejected this project's credentials, so validation used the
+Compose Postgres service on port 55432 with existing migrations applied.
+`MIGRATION_DATABASE_URL`, `DATABASE_URL`, and `WORKER_DATABASE_URL` were overridden
+for the validation processes to use that port; the existing server and `.env`
+were left unchanged. On WSL with the Windows Docker CLI, the launch command was
+`WSLENV=POSTGRES_PORT POSTGRES_PORT=55432 docker.exe compose up -d --wait postgres`.
+Normal stack commands are in [lint and tests](../lint-test.md#checks-that-need-the-local-data-services).
+
+Ingestion refactor validation is complete, with no remaining blockers or
+intentional behavior changes. Both suites emit the existing Starlette/AnyIO
+`BlockingPortal` deprecation warning.

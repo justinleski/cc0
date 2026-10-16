@@ -137,7 +137,7 @@ visibility. Commands and infrastructure requirements are in
   or `rights_evidence`. The view owner is the migration superuser
   (`security_invoker = false`).
 - A newer evidence row that is not verified CC0 is written by
-  `CatalogStore.record_superseding_rights`, which sets the asset `SUPPRESSED`
+  `IngestionRepository.record_superseding_rights`, which sets the asset `SUPPRESSED`
   in that same transaction. Ingest treats an asset that already has bytes as
   finished and does not re-run the rights gate, so this function is how a
   published asset is unpublished. Public queries require both gates. A
