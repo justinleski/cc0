@@ -21,9 +21,10 @@ from app.embeddings.provider import EmbeddingProvider, build_provider
 from app.ingestion.fetch import HttpImageFetcher, HttpJsonSource, Pacer
 from app.ingestion.fixtures import FixtureSource
 from app.ingestion.met import MetAdapter
+from app.ingestion.repository import IngestionRepository
+from app.ingestion.service import IngestService
 from app.integrations.object_store import ObjectStore, create_s3_client
 from app.worker.embed import EmbedService
-from app.worker.ingest import IngestService
 from app.worker.jobs import JobStore
 from app.worker.store import CatalogStore
 
@@ -88,7 +89,7 @@ def build_runtime(settings: Settings) -> WorkerRuntime:
         adapter=MetAdapter(json_source),
         image_fetcher=image_fetcher,
         object_store=object_store,
-        catalog_store=catalog_store,
+        repository=IngestionRepository(engine),
         job_store=job_store,
         embedding_model_key=embeddings.model_key,
         embedding_model_version=embeddings.model_version,

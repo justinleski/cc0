@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Engine, text
+from sqlalchemy import Connection, Engine, text
 
 from app.db import catalog
 
@@ -131,6 +131,25 @@ class JobRow:
     attempt_count: int
     last_error: str | None
     payload: dict[str, Any]
+
+
+def hold_claim(connection: Connection, job: ClaimedJob) -> None:
+    """Lock the job row for this transaction, or refuse to write at all.
+
+    `FOR UPDATE` keeps the row from being reclaimed between this check and the
+    commit, so the catalog write and the job state it belongs to settle on the
+    same answer about who owns the work.
+    """
+    held = connection.execute(
+        text(f"SELECT id FROM jobs WHERE {CLAIM_HELD} FOR UPDATE"),
+        {
+            "job_id": job.id,
+            "claim_token": job.claim_token,
+            "leased": catalog.JOB_LEASED,
+        },
+    ).scalar_one_or_none()
+    if held is None:
+        raise ClaimLost(job.id)
 
 
 class JobStore:
