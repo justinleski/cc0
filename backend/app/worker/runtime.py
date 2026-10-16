@@ -26,6 +26,8 @@ from app.ingestion.met import MetAdapter
 from app.ingestion.repository import IngestionRepository
 from app.ingestion.service import IngestService
 from app.integrations.object_store import ObjectStore, create_s3_client
+from app.worker.embed import EmbedWorker
+from app.worker.ingest import IngestWorker
 from app.worker.jobs import JobStore
 
 
@@ -35,6 +37,8 @@ class WorkerRuntime:
     engine: Engine
     service: IngestService
     embed_service: EmbedService
+    ingest_worker: IngestWorker
+    embed_worker: EmbedWorker
     embeddings: EmbeddingProvider
     job_store: JobStore
     # The recorded-fixture source in fixture mode, which also carries the
@@ -106,6 +110,8 @@ def build_runtime(settings: Settings) -> WorkerRuntime:
         engine=engine,
         service=service,
         embed_service=embed_service,
+        ingest_worker=IngestWorker(settings=settings, job_store=job_store, service=service),
+        embed_worker=EmbedWorker(settings=settings, job_store=job_store, service=embed_service),
         embeddings=embeddings,
         job_store=job_store,
         source=source,

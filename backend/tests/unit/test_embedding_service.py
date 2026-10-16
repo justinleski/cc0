@@ -53,7 +53,7 @@ def test_new_vector_is_published_after_object_read_and_inference():
         {"asset_id": str(asset_id), "model_key": "fake", "model_version": "v1",
          "original_key": "original"}, uuid4(),
     )
-    assert service._execute(job).result == EMBEDDED
+    assert service.execute(job).result == EMBEDDED
     assert events == ["asset", "exists", "object", "inference", "publish"]
 
 
@@ -87,5 +87,5 @@ def test_existing_vector_skips_object_read_and_inference():
         {"asset_id": str(asset_id), "model_key": "fake", "model_version": "v1",
          "original_key": "original"}, uuid4(),
     )
-    assert service._execute(job).result == ALREADY_EMBEDDED
+    assert service.execute(job).result == ALREADY_EMBEDDED
     assert events == ["asset", "exists", "publish_existing"]

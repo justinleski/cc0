@@ -52,10 +52,11 @@ flowchart TD
 | [fetch.py](../../backend/app/ingestion/fetch.py) | URL validation, public-address check, image and metadata HTTP clients, pacing |
 | [images.py](../../backend/app/ingestion/images.py) | Bounded decode, SHA-256, WebP thumbnail |
 | [fixtures.py](../../backend/app/ingestion/fixtures.py) | Recorded responses with the same allowlist rules, plus a request log |
-| [service.py](../../backend/app/ingestion/service.py) | Discovery, enqueue/skip decisions, rights/fetch sequencing, resume and retry orchestration |
+| [service.py](../../backend/app/ingestion/service.py) | Discovery, enqueue/skip decisions, rights/fetch sequencing and durable workflow resume |
 | [repository.py](../../backend/app/ingestion/repository.py) | Connection scopes, typed row mapping, atomic catalog and job writes |
 | [queries.py](../../backend/app/ingestion/queries.py) | Parameterized SQL and pure JSON parameter builders; no I/O |
 | [models.py](../../backend/app/ingestion/models.py) | SourceRecord, Asset, Evidence, and IngestOutcome dataclasses; no HTTP or driver types |
+| [worker/ingest.py](../../backend/app/worker/ingest.py) | Drain/claim loop, lease lifecycle, retries, exhaustion and failure settlement |
 | [worker/jobs.py](../../backend/app/worker/jobs.py) | Claim, lease, retry, dead letter, redrive |
 | [worker/lease.py](../../backend/app/worker/lease.py) | Background claim renewal and deadline checks |
 | [worker/runtime.py](../../backend/app/worker/runtime.py) | Injects the shared worker engine, job store, provider clients and object store |
@@ -64,10 +65,12 @@ flowchart TD
 ### Layers and transaction boundaries
 
 Following [ADR-0005](../decisions/0005-feature-based-layered-architecture.md),
-the worker CLI calls `IngestService`, which uses the concrete
+the worker CLI drains `IngestWorker`, which invokes `IngestService` for the
+business workflow. The service uses the concrete
 `IngestionRepository`, which executes feature-local query builders. Rights,
 metadata normalization, and image processing stay in focused modules. Services
-also coordinate external clients and the shared `JobStore`; repositories never
+also coordinate external clients and use the shared `JobStore` for feature-driven
+enqueue/recheck decisions and durable progress hints; repositories never
 call those clients. `models.py` uses the shared catalog vocabulary, which has no
 infrastructure dependencies.
 
@@ -95,6 +98,23 @@ connection. Its token, state, unexpired-lease predicate and `FOR UPDATE` lock
 prevent a stale attempt from writing. It must not be replaced with a separate
 committing job-store call. Other job claims, backoff, rechecks, redrive and
 exhaustion reconciliation remain in `JobStore`.
+
+### Worker execution ownership
+
+`worker/ingest.py` owns `drain()`, `run_claimed()`, `LeaseKeeper`, retry/backoff,
+attempt exhaustion and infrastructure settlement. `IngestService.execute()`
+retains cache/evidence decisions, rights validation, fetch and object-write
+sequencing, durable object reuse, and repository coordination. It receives a
+`check_active` callback from the adapter; it neither creates nor renews a lease.
+Checks run at the same points as before, including streamed image reads.
+
+The runtime exposes `ingest_worker` and `embed_worker` alongside feature services,
+using the same engine, pool and job store. Feature services no longer expose
+`drain()` or `run_claimed()`. Claim-loss result constants live in worker adapters.
+The claimed job still crosses into repositories for connection-scoped fencing.
+`job_settled` tells the adapter when repository success was committed atomically;
+it must not issue another success write. Unexpected exceptions still propagate,
+leaving the lease to expire. No transaction or execution semantics change.
 
 ### Internal interface migration
 
@@ -343,3 +363,12 @@ Normal stack commands are in [lint and tests](../lint-test.md#checks-that-need-t
 Ingestion refactor validation is complete, with no remaining blockers or
 intentional behavior changes. Both suites emit the existing Starlette/AnyIO
 `BlockingPortal` deprecation warning.
+
+### Worker ownership correction validation
+
+The execution/workflow split preserves the feature layers introduced above.
+Validation on 2026-10-16: Ruff passed, all 209 unit tests and 41 integration tests
+passed, and `git diff --check` passed. Integration coverage retains real-database
+rollback, stale-worker fencing, retry/resume, and atomic settlement scenarios.
+The existing Starlette/AnyIO deprecation warning remains. No schemas, grants,
+repository transactions, shared job mechanics, or pool lifecycles changed.

@@ -27,6 +27,8 @@ from app.ingestion.service import IngestService
 from app.integrations.object_store import ObjectStore, create_s3_client
 from app.main import create_app
 from app.search.cursor import decode_cursor, encode_cursor
+from app.worker.embed import EmbedWorker
+from app.worker.ingest import IngestWorker
 from app.worker.jobs import ClaimLost, JobStore
 from tests.integration.conftest import BACKEND_ROOT, CatalogDatabase
 
@@ -55,22 +57,30 @@ class ReadyCatalog:
         job_store = JobStore(self.engine)
         embeddings = build_provider(settings)
         self.embeddings = embeddings
-        self.ingest = IngestService(
+        self.ingest = IngestWorker(
             settings=settings,
-            adapter=MetAdapter(source),
-            image_fetcher=source,
-            object_store=objects,
-            repository=self.ingestion_repository,
             job_store=job_store,
-            embedding_model_key=embeddings.model_key,
-            embedding_model_version=embeddings.model_version,
+            service=IngestService(
+                settings=settings,
+                adapter=MetAdapter(source),
+                image_fetcher=source,
+                object_store=objects,
+                repository=self.ingestion_repository,
+                job_store=job_store,
+                embedding_model_key=embeddings.model_key,
+                embedding_model_version=embeddings.model_version,
+            ),
         )
-        self.embed = EmbedService(
+        self.embed = EmbedWorker(
             settings=settings,
-            embeddings=embeddings,
-            object_store=objects,
-            repository=catalog_store,
             job_store=job_store,
+            service=EmbedService(
+                settings=settings,
+                embeddings=embeddings,
+                object_store=objects,
+                repository=catalog_store,
+                job_store=job_store,
+            ),
         )
         self.job_store = job_store
         self.catalog = catalog_store
@@ -115,7 +125,7 @@ def ready_catalog(
 
 
 def _publish(catalog_under_test: ReadyCatalog, external_ids: list[str]) -> None:
-    assert catalog_under_test.ingest.enqueue(external_ids) == {}
+    assert catalog_under_test.ingest.service.enqueue(external_ids) == {}
     catalog_under_test.ingest.drain()
     outcomes = catalog_under_test.embed.drain()
     assert {outcome.result for outcome in outcomes} == {EMBEDDED}
@@ -127,10 +137,13 @@ def test_embed_publishes_ready_and_a_repeat_does_not_write_a_second_vector(
 ) -> None:
     _publish(ready_catalog, [HARBOR, FIELD])
 
-    assert ready_catalog.scalar(
-        "SELECT count(*) FROM assets WHERE status = :ready",
-        ready=catalog.ASSET_READY,
-    ) == 2
+    assert (
+        ready_catalog.scalar(
+            "SELECT count(*) FROM assets WHERE status = :ready",
+            ready=catalog.ASSET_READY,
+        )
+        == 2
+    )
     assert ready_catalog.scalar(f"SELECT count(*) FROM {catalog.EMBEDDINGS_TABLE}") == 2
     assert ready_catalog.scalar(
         f"SELECT min(dimensions) FROM {catalog.EMBEDDINGS_TABLE}"
@@ -138,7 +151,7 @@ def test_embed_publishes_ready_and_a_repeat_does_not_write_a_second_vector(
 
     again = ready_catalog.embed.drain()
     assert again == []
-    ready_catalog.embed.enqueue_missing()
+    ready_catalog.embed.service.enqueue_missing()
     repeated = ready_catalog.embed.drain()
     assert repeated == [] or {outcome.result for outcome in repeated} <= {ALREADY_EMBEDDED}
     assert ready_catalog.scalar(f"SELECT count(*) FROM {catalog.EMBEDDINGS_TABLE}") == 2
@@ -152,7 +165,7 @@ def test_embed_publication_rolls_back_and_respects_claim_fence(
     if existing:
         _publish(ready_catalog, [HARBOR])
     else:
-        assert ready_catalog.ingest.enqueue([HARBOR]) == {}
+        assert ready_catalog.ingest.service.enqueue([HARBOR]) == {}
         ready_catalog.ingest.drain()
     asset_id = ready_catalog.scalar("SELECT id FROM assets")
     assert isinstance(asset_id, UUID)
@@ -165,8 +178,12 @@ def test_embed_publication_rolls_back_and_respects_claim_fence(
             )
         assert ready_catalog.job_store.enqueue(
             f"embed:retry-probe:{uuid4()}",
-            {"asset_id": str(asset_id), "model_key": FAKE_MODEL_KEY,
-             "model_version": FAKE_MODEL_VERSION, "original_key": "unused"},
+            {
+                "asset_id": str(asset_id),
+                "model_key": FAKE_MODEL_KEY,
+                "model_version": FAKE_MODEL_VERSION,
+                "original_key": "unused",
+            },
             max_attempts=4,
             kind=catalog.JOB_KIND_EMBED,
         )
@@ -198,16 +215,17 @@ def test_embed_publication_rolls_back_and_respects_claim_fence(
         if failure == "settlement":
             event.remove(ready_catalog.engine, "before_cursor_execute", fail_settlement)
 
-    assert ready_catalog.scalar(
-        "SELECT status FROM assets WHERE id = :asset_id", asset_id=asset_id
-    ) == catalog.ASSET_STORED
     assert (
-        ready_catalog.scalar(f"SELECT count(*) FROM {catalog.EMBEDDINGS_TABLE}")
-        == initial_vectors
+        ready_catalog.scalar("SELECT status FROM assets WHERE id = :asset_id", asset_id=asset_id)
+        == catalog.ASSET_STORED
     )
-    assert ready_catalog.scalar(
-        "SELECT state FROM jobs WHERE id = :job_id", job_id=job.id
-    ) == catalog.JOB_LEASED
+    assert (
+        ready_catalog.scalar(f"SELECT count(*) FROM {catalog.EMBEDDINGS_TABLE}") == initial_vectors
+    )
+    assert (
+        ready_catalog.scalar("SELECT state FROM jobs WHERE id = :job_id", job_id=job.id)
+        == catalog.JOB_LEASED
+    )
 
 
 def test_search_requires_quotes_filters_exactly_and_hides_the_negative_cache(
@@ -271,7 +289,7 @@ def test_search_requires_quotes_filters_exactly_and_hides_the_negative_cache(
 
 
 def test_a_stored_asset_is_not_public_until_embed_commits(ready_catalog: ReadyCatalog) -> None:
-    assert ready_catalog.ingest.enqueue([HARBOR]) == {}
+    assert ready_catalog.ingest.service.enqueue([HARBOR]) == {}
     ready_catalog.ingest.drain()
     asset_id = ready_catalog.scalar("SELECT id FROM assets")
     assert isinstance(asset_id, UUID)
@@ -312,16 +330,20 @@ class _NamedCheckpoint:
 
 def _embed_for(
     catalog_under_test: ReadyCatalog, model_key: str, model_version: str
-) -> EmbedService:
-    return EmbedService(
+) -> EmbedWorker:
+    return EmbedWorker(
         settings=catalog_under_test.settings,
-        embeddings=_NamedCheckpoint(model_key, model_version),
-        object_store=ObjectStore(
-            catalog_under_test._s3,
-            catalog_under_test.settings.object_store_bucket,
-        ),
-        repository=catalog_under_test.catalog,
         job_store=catalog_under_test.job_store,
+        service=EmbedService(
+            settings=catalog_under_test.settings,
+            embeddings=_NamedCheckpoint(model_key, model_version),
+            object_store=ObjectStore(
+                catalog_under_test._s3,
+                catalog_under_test.settings.object_store_bucket,
+            ),
+            repository=catalog_under_test.catalog,
+            job_store=catalog_under_test.job_store,
+        ),
     )
 
 
@@ -386,14 +408,17 @@ def test_fake_vectors_do_not_satisfy_the_openclip_identity(ready_catalog: ReadyC
     assert ready_catalog.embeddings.model_key == FAKE_MODEL_KEY
     assert ready_catalog.embeddings.model_version == FAKE_MODEL_VERSION
     assert ready_catalog.settings.model_version == OPENCLIP_VERSION
-    assert ready_catalog.scalar(
-        f"""
+    assert (
+        ready_catalog.scalar(
+            f"""
         SELECT count(*) FROM {catalog.EMBEDDINGS_TABLE}
         WHERE model_key = :model_key AND model_version = :model_version
         """,
-        model_key=FAKE_MODEL_KEY,
-        model_version=FAKE_MODEL_VERSION,
-    ) == 2
+            model_key=FAKE_MODEL_KEY,
+            model_version=FAKE_MODEL_VERSION,
+        )
+        == 2
+    )
     assert (
         ready_catalog.scalar(
             f"""
@@ -405,9 +430,9 @@ def test_fake_vectors_do_not_satisfy_the_openclip_identity(ready_catalog: ReadyC
         )
         == 0
     )
-    assert ready_catalog.embed.enqueue_missing() == 0
+    assert ready_catalog.embed.service.enqueue_missing() == 0
 
-    queued = _embed_for(ready_catalog, OPENCLIP_KEY, OPENCLIP_VERSION).enqueue_missing()
+    queued = _embed_for(ready_catalog, OPENCLIP_KEY, OPENCLIP_VERSION).service.enqueue_missing()
     assert queued == 2
     assert (
         ready_catalog.scalar(
@@ -425,9 +450,7 @@ def test_fake_vectors_do_not_satisfy_the_openclip_identity(ready_catalog: ReadyC
         )
         == 2
     )
-    assert (
-        ready_catalog.scalar(f"SELECT count(*) FROM {catalog.EMBEDDINGS_TABLE}") == 2
-    )
+    assert ready_catalog.scalar(f"SELECT count(*) FROM {catalog.EMBEDDINGS_TABLE}") == 2
 
 
 def test_embed_claim_leaves_another_checkpoint_pending(ready_catalog: ReadyCatalog) -> None:

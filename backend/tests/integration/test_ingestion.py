@@ -33,6 +33,7 @@ from app.ingestion.met import MetAdapter
 from app.ingestion.repository import IngestionRepository
 from app.ingestion.service import IngestService
 from app.integrations.object_store import ObjectStore, create_s3_client
+from app.worker.ingest import IngestWorker
 from app.worker.jobs import ClaimLost, JobStore, dedupe_key
 from tests.integration.conftest import BACKEND_ROOT, CatalogDatabase
 
@@ -96,25 +97,29 @@ class WorkerKilled(BaseException):
 class Harness:
     settings: Settings
     database: CatalogDatabase
-    service: IngestService
+    worker: IngestWorker
     source: FixtureSource
     objects: RecordingObjectStore
     job_store: JobStore
     repository: IngestionRepository
     engine: Any
-    extra_services: list[IngestService] = field(default_factory=list)
+    extra_services: list[IngestWorker] = field(default_factory=list)
 
-    def service_with(self, image_fetcher: Any) -> IngestService:
+    def worker_with(self, image_fetcher: Any) -> IngestWorker:
         """Another service over the same database, with a different fetcher."""
-        service = IngestService(
+        service = IngestWorker(
             settings=self.settings,
-            adapter=MetAdapter(self.source),
-            image_fetcher=image_fetcher,
-            object_store=self.objects,
-            repository=self.repository,
             job_store=self.job_store,
-            embedding_model_key=self.service.embedding_model_key,
-            embedding_model_version=self.service.embedding_model_version,
+            service=IngestService(
+                settings=self.settings,
+                adapter=MetAdapter(self.source),
+                image_fetcher=image_fetcher,
+                object_store=self.objects,
+                repository=self.repository,
+                job_store=self.job_store,
+                embedding_model_key=self.worker.service.embedding_model_key,
+                embedding_model_version=self.worker.service.embedding_model_version,
+            ),
         )
         self.extra_services.append(service)
         return service
@@ -130,7 +135,7 @@ class Harness:
     def job(self, external_id: str) -> Any:
         return self.job_store.get(dedupe_key("met", external_id))
 
-    def drain_until_settled(self, service: IngestService, rounds: int = 6) -> list[Any]:
+    def drain_until_settled(self, service: IngestWorker, rounds: int = 6) -> list[Any]:
         """Run retries to completion, since retry_wait carries a short backoff."""
         outcomes: list[Any] = []
         for _ in range(rounds):
@@ -158,8 +163,7 @@ class Harness:
         """Let a dead worker's lease run out without waiting for it."""
         with psycopg.connect(self.database.migration_url, autocommit=True) as connection:
             connection.execute(
-                "UPDATE jobs SET leased_until = now() - interval '1 second' "
-                "WHERE dedupe_key = %s",
+                "UPDATE jobs SET leased_until = now() - interval '1 second' WHERE dedupe_key = %s",
                 (dedupe_key("met", external_id),),
             )
 
@@ -197,15 +201,19 @@ def harness(
     harness = Harness(
         settings=settings,
         database=catalog_database,
-        service=IngestService(
+        worker=IngestWorker(
             settings=settings,
-            adapter=MetAdapter(source),
-            image_fetcher=source,
-            object_store=objects,
-            repository=repository,
             job_store=job_store,
-            embedding_model_key=embeddings.model_key,
-            embedding_model_version=embeddings.model_version,
+            service=IngestService(
+                settings=settings,
+                adapter=MetAdapter(source),
+                image_fetcher=source,
+                object_store=objects,
+                repository=repository,
+                job_store=job_store,
+                embedding_model_key=embeddings.model_key,
+                embedding_model_version=embeddings.model_version,
+            ),
         ),
         source=source,
         objects=objects,
@@ -221,8 +229,8 @@ def harness(
 
 
 def test_ten_cc0_fixtures_ingest_the_same_way_every_time(harness: Harness) -> None:
-    assert harness.service.enqueue(CC0_IDS) == {}
-    outcomes = harness.service.drain()
+    assert harness.worker.service.enqueue(CC0_IDS) == {}
+    outcomes = harness.worker.drain()
 
     assert len(outcomes) == 10
     assert {outcome.result for outcome in outcomes} == {ingest_module.STORED}
@@ -234,14 +242,20 @@ def test_ten_cc0_fixtures_ingest_the_same_way_every_time(harness: Harness) -> No
     assert len(harness.source.image_requests) == 10
     assert len(set(harness.source.image_requests)) == 10
     assert harness.scalar("SELECT count(*) FROM rights_evidence") == 10
-    assert harness.scalar(
-        "SELECT count(*) FROM rights_evidence WHERE decision_reason = :reason",
-        reason="provider_policy_and_item_flag",
-    ) == 10
-    assert harness.scalar(
-        "SELECT count(*) FROM source_records WHERE eligibility_status = :status",
-        status=catalog.ELIGIBILITY_ELIGIBLE_CC0,
-    ) == 10
+    assert (
+        harness.scalar(
+            "SELECT count(*) FROM rights_evidence WHERE decision_reason = :reason",
+            reason="provider_policy_and_item_flag",
+        )
+        == 10
+    )
+    assert (
+        harness.scalar(
+            "SELECT count(*) FROM source_records WHERE eligibility_status = :status",
+            status=catalog.ELIGIBILITY_ELIGIBLE_CC0,
+        )
+        == 10
+    )
 
     stored = harness.query(
         "SELECT sha256, original_key, thumbnail_key, mime_type, width, height FROM assets"
@@ -256,10 +270,10 @@ def test_ten_cc0_fixtures_ingest_the_same_way_every_time(harness: Harness) -> No
     # A second run of the same catalog.
     harness.source.requests.clear()
     harness.objects.puts.clear()
-    repeat = harness.service.enqueue(CC0_IDS)
+    repeat = harness.worker.service.enqueue(CC0_IDS)
 
     assert set(repeat.values()) == {ingest_module.ALREADY_STORED}
-    assert harness.service.drain() == []
+    assert harness.worker.drain() == []
     # No metadata request and no image request: the stored asset answers both.
     assert harness.source.requests == []
     assert harness.objects.puts == []
@@ -268,8 +282,8 @@ def test_ten_cc0_fixtures_ingest_the_same_way_every_time(harness: Harness) -> No
 
 
 def test_non_cc0_and_unknown_records_never_reach_an_image(harness: Harness) -> None:
-    harness.service.enqueue(NON_CC0_IDS + UNKNOWN_IDS)
-    outcomes = harness.service.drain()
+    harness.worker.service.enqueue(NON_CC0_IDS + UNKNOWN_IDS)
+    outcomes = harness.worker.drain()
 
     assert {outcome.result for outcome in outcomes} == {ingest_module.NEGATIVE_CACHED}
     # No asset row, no image download, no object write.
@@ -278,10 +292,13 @@ def test_non_cc0_and_unknown_records_never_reach_an_image(harness: Harness) -> N
     assert harness.objects.puts == []
     # The embeddings table exists, and a non-CC0 record still does not get a row.
     assert harness.scalar(f"SELECT count(*) FROM {catalog.EMBEDDINGS_TABLE}") == 0
-    assert harness.scalar(
-        "SELECT count(*) FROM jobs WHERE kind = :kind",
-        kind=catalog.JOB_KIND_EMBED,
-    ) == 0
+    assert (
+        harness.scalar(
+            "SELECT count(*) FROM jobs WHERE kind = :kind",
+            kind=catalog.JOB_KIND_EMBED,
+        )
+        == 0
+    )
 
     rows = harness.query(
         """
@@ -324,29 +341,29 @@ def test_non_cc0_and_unknown_records_never_reach_an_image(harness: Harness) -> N
 
 
 def test_a_record_not_due_for_recheck_is_not_fetched_again(harness: Harness) -> None:
-    harness.service.enqueue(NON_CC0_IDS)
-    harness.service.drain()
+    harness.worker.service.enqueue(NON_CC0_IDS)
+    harness.worker.drain()
     harness.source.requests.clear()
 
-    skipped = harness.service.enqueue(NON_CC0_IDS)
+    skipped = harness.worker.service.enqueue(NON_CC0_IDS)
 
     assert set(skipped.values()) == {ingest_module.SKIPPED_CACHE}
     # The cache short-circuits before any request, metadata included.
     assert harness.source.requests == []
-    assert harness.service.drain() == []
+    assert harness.worker.drain() == []
     assert harness.scalar("SELECT count(*) FROM rights_evidence") == 3
 
 
 def test_a_due_recheck_appends_evidence_without_rewriting_the_last_answer(
     harness: Harness,
 ) -> None:
-    harness.service.enqueue(["200001"])
-    harness.service.drain()
+    harness.worker.service.enqueue(["200001"])
+    harness.worker.drain()
     harness.expire_recheck("200001")
     harness.source.requests.clear()
 
-    assert harness.service.enqueue(["200001"]) == {}
-    outcomes = harness.service.drain()
+    assert harness.worker.service.enqueue(["200001"]) == {}
+    outcomes = harness.worker.drain()
 
     assert [outcome.result for outcome in outcomes] == [ingest_module.NEGATIVE_CACHED]
     # One new metadata request, and still no image request.
@@ -360,8 +377,8 @@ def test_a_due_recheck_appends_evidence_without_rewriting_the_last_answer(
 
 def test_a_transient_failure_retries_and_still_stores_one_object(harness: Harness) -> None:
     flaky = FlakyFetcher(harness.source, failures=2)
-    service = harness.service_with(flaky)
-    service.enqueue(["100001"])
+    service = harness.worker_with(flaky)
+    service.service.enqueue(["100001"])
 
     outcomes = harness.drain_until_settled(service)
 
@@ -377,8 +394,8 @@ def test_a_transient_failure_retries_and_still_stores_one_object(harness: Harnes
 
 
 def test_exhausted_retries_dead_letter_and_keep_the_cc0_decision(harness: Harness) -> None:
-    service = harness.service_with(FlakyFetcher(harness.source, failures=99))
-    service.enqueue(["100002"])
+    service = harness.worker_with(FlakyFetcher(harness.source, failures=99))
+    service.service.enqueue(["100002"])
 
     outcomes = harness.drain_until_settled(service)
 
@@ -406,8 +423,8 @@ def test_a_refused_image_is_dead_on_the_first_attempt(
     external_id: str,
     reason: str,
 ) -> None:
-    harness.service.enqueue([external_id])
-    outcomes = harness.service.drain()
+    harness.worker.service.enqueue([external_id])
+    outcomes = harness.worker.drain()
 
     assert [(outcome.result, outcome.detail) for outcome in outcomes] == [
         (catalog.JOB_DEAD, reason)
@@ -423,21 +440,21 @@ def test_a_refused_image_is_dead_on_the_first_attempt(
 
 
 def test_a_repeat_ingest_leaves_a_dead_job_dead_and_redrive_clears_it(harness: Harness) -> None:
-    failing = harness.service_with(FlakyFetcher(harness.source, failures=99))
-    failing.enqueue(["100004"])
+    failing = harness.worker_with(FlakyFetcher(harness.source, failures=99))
+    failing.service.enqueue(["100004"])
     harness.drain_until_settled(failing)
     assert harness.job("100004").state == catalog.JOB_DEAD
 
     # Re-running ingestion must not quietly clear a failure nobody has seen.
-    harness.service.enqueue(["100004"])
-    assert harness.service.drain() == []
+    harness.worker.service.enqueue(["100004"])
+    assert harness.worker.drain() == []
     assert harness.job("100004").state == catalog.JOB_DEAD
 
     assert harness.job_store.redrive(dedupe_key("met", "100004")) is True
     revived = harness.job("100004")
     assert (revived.state, revived.attempt_count) == (catalog.JOB_PENDING, 0)
     # The working fetcher now completes the same job row.
-    outcomes = harness.service.drain()
+    outcomes = harness.worker.drain()
     assert [outcome.result for outcome in outcomes] == [ingest_module.STORED]
     assert harness.scalar("SELECT count(*) FROM assets") == 1
     # The rights gate was not re-run: the stored decision still stands.
@@ -460,9 +477,9 @@ def test_a_crash_after_the_object_write_resumes_without_a_second_download(
         return original(**kwargs)
 
     monkeypatch.setattr(harness.repository, "store_asset", crash_once)
-    harness.service.enqueue(["100003"])
+    harness.worker.service.enqueue(["100003"])
 
-    first = harness.service.drain()
+    first = harness.worker.drain()
     assert [outcome.result for outcome in first] == [catalog.JOB_RETRY_WAIT]
     assert len(harness.objects.puts) == 2
     assert harness.scalar("SELECT count(*) FROM assets") == 0
@@ -477,7 +494,7 @@ def test_a_crash_after_the_object_write_resumes_without_a_second_download(
     }
 
     time.sleep(0.05)
-    second = harness.service.drain()
+    second = harness.worker.drain()
 
     assert [outcome.result for outcome in second] == [ingest_module.RESUMED]
     # One image GET and two object writes across both attempts.
@@ -499,18 +516,18 @@ def test_a_killed_worker_resumes_after_its_lease_expires_without_a_second_downlo
     # Both objects are written and the asset row is not: the process dies with
     # no chance to record a retry, so the row is left leased.
     monkeypatch.setattr(harness.repository, "store_asset", killed)
-    harness.service.enqueue(["100006"])
+    harness.worker.service.enqueue(["100006"])
     with pytest.raises(WorkerKilled):
-        harness.service.drain()
+        harness.worker.drain()
     assert harness.job("100006").state == catalog.JOB_LEASED
     assert len(harness.objects.puts) == 2
 
     # A live lease is not taken from a worker that may still be running.
     monkeypatch.setattr(harness.repository, "store_asset", original)
-    assert harness.service.drain() == []
+    assert harness.worker.drain() == []
 
     harness.expire_lease("100006")
-    outcomes = harness.service.drain()
+    outcomes = harness.worker.drain()
 
     assert [outcome.result for outcome in outcomes] == [ingest_module.RESUMED]
     assert len(harness.source.image_requests) == 1
@@ -529,15 +546,15 @@ def test_a_job_that_keeps_killing_the_worker_is_dead_lettered(
         raise WorkerKilled
 
     monkeypatch.setattr(harness.repository, "store_asset", killed)
-    harness.service.enqueue(["100007"])
+    harness.worker.service.enqueue(["100007"])
     for _ in range(harness.settings.ingest_max_attempts):
         with pytest.raises(WorkerKilled):
-            harness.service.drain()
+            harness.worker.drain()
         harness.expire_lease("100007")
 
     # The last lease expired with no attempts left. The claim query can no
     # longer see the row, so the reaper is what makes it visible as dead.
-    assert harness.service.drain() == []
+    assert harness.worker.drain() == []
     job = harness.job("100007")
     assert (job.state, job.attempt_count, job.last_error) == (
         catalog.JOB_DEAD,
@@ -553,7 +570,7 @@ def test_a_job_that_keeps_killing_the_worker_is_dead_lettered(
 
 
 def test_one_worker_at_a_time_holds_a_job(harness: Harness) -> None:
-    harness.service.enqueue(["100005"])
+    harness.worker.service.enqueue(["100005"])
 
     first = harness.job_store.claim(lease_seconds=300)
     second = harness.job_store.claim(lease_seconds=300)
@@ -567,8 +584,8 @@ def test_one_worker_at_a_time_holds_a_job(harness: Harness) -> None:
 
 def test_creators_are_reused_within_a_provider(harness: Harness) -> None:
     # The first two fixtures share one artist with an authority URL.
-    harness.service.enqueue(["100001", "100002"])
-    harness.service.drain()
+    harness.worker.service.enqueue(["100001", "100002"])
+    harness.worker.drain()
 
     creators = harness.query("SELECT external_key, name FROM creators")
     assert len(creators) == 1
@@ -579,8 +596,8 @@ def test_creators_are_reused_within_a_provider(harness: Harness) -> None:
 def test_identical_bytes_under_two_records_keep_two_assets(harness: Harness) -> None:
     """Shared bytes are storage reuse, not a claim that two works are the same."""
     recorded = json.loads((FIXTURE_ROOT / "objects" / f"{CC0_IDS[0]}.json").read_text())
-    service = harness.service_with(SameBytesFetcher(harness.source, recorded["primaryImage"]))
-    service.enqueue(CC0_IDS[:2])
+    service = harness.worker_with(SameBytesFetcher(harness.source, recorded["primaryImage"]))
+    service.service.enqueue(CC0_IDS[:2])
 
     outcomes = service.drain()
 
@@ -597,8 +614,8 @@ def test_identical_bytes_under_two_records_keep_two_assets(harness: Harness) -> 
 
 def test_a_repeat_ingest_keeps_a_retry_budget(harness: Harness) -> None:
     """Re-running ingest must not erase backoff or attempts already spent."""
-    service = harness.service_with(FlakyFetcher(harness.source, failures=1))
-    service.enqueue(["100008"])
+    service = harness.worker_with(FlakyFetcher(harness.source, failures=1))
+    service.service.enqueue(["100008"])
     first = service.drain()
 
     assert [outcome.result for outcome in first] == [catalog.JOB_RETRY_WAIT]
@@ -610,30 +627,30 @@ def test_a_repeat_ingest_keeps_a_retry_budget(harness: Harness) -> None:
             (dedupe_key("met", "100008"),),
         )
 
-    harness.service.enqueue(["100008"])
+    harness.worker.service.enqueue(["100008"])
 
     again = harness.job("100008")
     assert (again.state, again.attempt_count) == (catalog.JOB_RETRY_WAIT, 1)
     # Still waiting out the hour, so nothing is claimed.
-    assert harness.service.drain() == []
+    assert harness.worker.drain() == []
     assert harness.job("100008").state == catalog.JOB_RETRY_WAIT
 
 
 def test_a_due_recheck_resets_a_succeeded_negative_cache_job(harness: Harness) -> None:
-    harness.service.enqueue(["200001"])
-    harness.service.drain()
+    harness.worker.service.enqueue(["200001"])
+    harness.worker.drain()
     finished = harness.job("200001")
     assert (finished.state, finished.attempt_count) == (catalog.JOB_SUCCEEDED, 1)
 
     harness.expire_recheck("200001")
-    assert harness.service.enqueue(["200001"]) == {}
+    assert harness.worker.service.enqueue(["200001"]) == {}
 
     reset = harness.job("200001")
     assert (reset.state, reset.attempt_count) == (catalog.JOB_PENDING, 0)
 
 
 def test_a_stale_claim_cannot_overwrite_the_worker_that_reclaimed_it(harness: Harness) -> None:
-    harness.service.enqueue(["100009"])
+    harness.worker.service.enqueue(["100009"])
     first = harness.job_store.claim(lease_seconds=300)
     assert first is not None
     harness.expire_lease("100009")
@@ -677,8 +694,8 @@ def test_a_stale_claim_cannot_overwrite_the_worker_that_reclaimed_it(harness: Ha
 
 def test_an_asset_commit_and_its_success_are_one_claim(harness: Harness) -> None:
     """A lost claim cannot insert an asset, and a stored one is not dead-lettered."""
-    harness.service.enqueue(["100010"])
-    outcomes = harness.service.drain()
+    harness.worker.service.enqueue(["100010"])
+    outcomes = harness.worker.drain()
     assert [outcome.result for outcome in outcomes] == [ingest_module.STORED]
     assert harness.job("100010").state == catalog.JOB_SUCCEEDED
 
@@ -696,13 +713,13 @@ def test_an_asset_commit_and_its_success_are_one_claim(harness: Harness) -> None
             (harness.settings.ingest_max_attempts, dedupe_key("met", "100010")),
         )
 
-    assert harness.service.drain() == []
+    assert harness.worker.drain() == []
     assert harness.job("100010").state == catalog.JOB_SUCCEEDED
     assert harness.scalar("SELECT count(*) FROM assets") == 1
 
 
 def test_fixture_catalog_is_the_recorded_shape(harness: Harness) -> None:
-    discovered = harness.service.discover(100)
+    discovered = harness.worker.service.discover(100)
 
     assert discovered[:10] == CC0_IDS
     assert set(NON_CC0_IDS + UNKNOWN_IDS + list(REFUSED)) <= set(discovered)
@@ -717,7 +734,7 @@ def test_asset_transaction_failure_rolls_back_and_resumes_from_objects(
     harness: Harness, failed_write: str,
 ) -> None:
     """A late failure must not commit a creator, asset, embed job, or success."""
-    harness.service.enqueue(["100001"])
+    harness.worker.service.enqueue(["100001"])
     job = harness.job_store.claim(lease_seconds=harness.settings.ingest_lease_seconds)
     assert job is not None
 
@@ -728,7 +745,7 @@ def test_asset_transaction_failure_rolls_back_and_resumes_from_objects(
     event.listen(harness.engine, "before_cursor_execute", fail_write)
     try:
         with pytest.raises(RuntimeError, match="simulated transaction failure"):
-            harness.service.run_claimed(job)
+            harness.worker.run_claimed(job)
     finally:
         event.remove(harness.engine, "before_cursor_execute", fail_write)
 
@@ -742,7 +759,7 @@ def test_asset_transaction_failure_rolls_back_and_resumes_from_objects(
     assert len(harness.objects.puts) == 2
 
     harness.expire_lease("100001")
-    assert [outcome.result for outcome in harness.service.drain()] == [ingest_module.RESUMED]
+    assert [outcome.result for outcome in harness.worker.drain()] == [ingest_module.RESUMED]
     assert harness.job("100001").state == catalog.JOB_SUCCEEDED
     assert harness.scalar("SELECT count(*) FROM assets") == 1
     assert harness.scalar("SELECT count(*) FROM jobs WHERE kind = 'embed'") == 1
@@ -752,7 +769,7 @@ def test_asset_transaction_failure_rolls_back_and_resumes_from_objects(
 
 
 def test_evidence_insert_failure_rolls_back_source_decision_before_fetch(harness: Harness) -> None:
-    harness.service.enqueue(["100001"])
+    harness.worker.service.enqueue(["100001"])
 
     def fail_evidence(connection, cursor, statement, parameters, context, executemany):
         if " ".join(statement.split()).startswith("INSERT INTO rights_evidence"):
@@ -761,11 +778,11 @@ def test_evidence_insert_failure_rolls_back_source_decision_before_fetch(harness
     event.listen(harness.engine, "before_cursor_execute", fail_evidence)
     try:
         with pytest.raises(RuntimeError, match="simulated evidence failure"):
-            harness.service.drain()
+            harness.worker.drain()
     finally:
         event.remove(harness.engine, "before_cursor_execute", fail_evidence)
 
-    record = harness.repository.get_source_record(harness.service.provider_id, "100001")
+    record = harness.repository.get_source_record(harness.worker.service.provider_id, "100001")
     assert record is not None
     assert record.eligibility_status == catalog.ELIGIBILITY_DISCOVERED
     assert record.raw_metadata == {}

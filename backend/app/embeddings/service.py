@@ -14,16 +14,13 @@ from app.embeddings.models import EmbedOutcome
 from app.embeddings.provider import EmbeddingProvider
 from app.embeddings.repository import EmbeddingRepository
 from app.ingestion.errors import PermanentFailure, TransientFailure
-from app.integrations.object_store import ObjectStore, ObjectStoreUnavailable
-from app.worker import jobs as job_module
-from app.worker.jobs import ClaimLost, JobStore, embed_dedupe_key
-from app.worker.lease import LeaseKeeper
+from app.integrations.object_store import ObjectStore
+from app.worker.jobs import ClaimedJob, JobStore, embed_dedupe_key
 
 logger = logging.getLogger("cc0.worker.embed")
 
 EMBEDDED = "embedded"
 ALREADY_EMBEDDED = "already_embedded"
-CLAIM_LOST = "claim_lost"
 
 
 class EmbedService:
@@ -73,56 +70,18 @@ class EmbedService:
                 queued += 1
         return queued
 
-    def drain(self, max_jobs: int | None = None) -> list[EmbedOutcome]:
+    @property
+    def model_key(self) -> str:
+        return self._embeddings.model_key
+
+    @property
+    def model_version(self) -> str:
+        return self._embeddings.model_version
+
+    def prepare(self) -> None:
         self._embeddings.prepare()
-        self._jobs.reap_exhausted(kind=catalog.JOB_KIND_EMBED)
-        outcomes: list[EmbedOutcome] = []
-        budget = max_jobs if max_jobs is not None else self._settings.ingest_batch_limit
-        for _ in range(budget):
-            job = self._jobs.claim(
-                lease_seconds=self._settings.ingest_lease_seconds,
-                kind=catalog.JOB_KIND_EMBED,
-                model_key=self._embeddings.model_key,
-                model_version=self._embeddings.model_version,
-            )
-            if job is None:
-                break
-            outcomes.append(self.run_claimed(job))
-        return outcomes
 
-    def run_claimed(self, job) -> EmbedOutcome:
-        asset_id = str(job.payload.get("asset_id", ""))
-        try:
-            with LeaseKeeper(
-                self._jobs,
-                job,
-                lease_seconds=self._settings.ingest_lease_seconds,
-                deadline_seconds=self._settings.ingest_job_deadline_seconds,
-            ):
-                outcome = self._execute(job)
-        except ClaimLost:
-            return EmbedOutcome(asset_id, CLAIM_LOST, job_settled=True)
-        except PermanentFailure as failure:
-            if not self._jobs.mark_dead(job, failure.reason):
-                return EmbedOutcome(asset_id, CLAIM_LOST, failure.reason, job_settled=True)
-            logger.warning(
-                "embed job dead asset_id=%s reason=%s attempt=%s",
-                asset_id,
-                failure.reason,
-                job.attempt_count,
-            )
-            return EmbedOutcome(asset_id, catalog.JOB_DEAD, failure.reason, job_settled=True)
-        except TransientFailure as failure:
-            return self._schedule_retry(job, asset_id, failure)
-        except ObjectStoreUnavailable as failure:
-            return self._schedule_retry(
-                job,
-                asset_id,
-                TransientFailure("object_store", str(failure)),
-            )
-        return outcome
-
-    def _execute(self, job) -> EmbedOutcome:
+    def execute(self, job: ClaimedJob) -> EmbedOutcome:
         asset_raw = job.payload.get("asset_id")
         model_key = str(job.payload.get("model_key") or "")
         model_version = str(job.payload.get("model_version") or "")
@@ -176,19 +135,3 @@ class EmbedService:
             model_version,
         )
         return EmbedOutcome(str(asset_id), EMBEDDED, job_settled=True)
-
-    def _schedule_retry(self, job, asset_id: str, failure: TransientFailure) -> EmbedOutcome:
-        if job.attempts_exhausted:
-            if not self._jobs.mark_dead(job, failure.reason):
-                return EmbedOutcome(asset_id, CLAIM_LOST, failure.reason, job_settled=True)
-            return EmbedOutcome(asset_id, catalog.JOB_DEAD, failure.reason, job_settled=True)
-        delay = failure.retry_after
-        if delay is None:
-            delay = job_module.backoff_seconds(
-                job.attempt_count,
-                base_seconds=self._settings.ingest_backoff_base_seconds,
-                max_seconds=self._settings.ingest_backoff_max_seconds,
-            )
-        if not self._jobs.retry_later(job, failure.reason, delay):
-            return EmbedOutcome(asset_id, CLAIM_LOST, failure.reason, job_settled=True)
-        return EmbedOutcome(asset_id, catalog.JOB_RETRY_WAIT, failure.reason, job_settled=True)

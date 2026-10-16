@@ -12,13 +12,14 @@ without downloading the same bytes twice.
 """
 
 import logging
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
 from app.core.config import Settings
 from app.db import catalog
 from app.ingestion import images, met, rights
-from app.ingestion.errors import PermanentFailure, TransientFailure
+from app.ingestion.errors import PermanentFailure
 from app.ingestion.fetch import ImageFetcher, validate_url
 from app.ingestion.met import MetAdapter, MetItem
 from app.ingestion.models import IngestOutcome, SourceRecord
@@ -27,12 +28,10 @@ from app.integrations.object_store import (
     ORIGINAL_PREFIX,
     THUMBNAIL_PREFIX,
     ObjectStore,
-    ObjectStoreUnavailable,
     content_key,
 )
 from app.worker import jobs as job_module
-from app.worker.jobs import ClaimedJob, ClaimLost, JobStore
-from app.worker.lease import LeaseKeeper
+from app.worker.jobs import ClaimedJob, JobStore
 
 logger = logging.getLogger("cc0.worker")
 
@@ -41,9 +40,6 @@ NEGATIVE_CACHED = "negative_cached"
 STORED = "stored"
 ALREADY_STORED = "already_stored"
 RESUMED = "stored_from_existing_objects"
-# The lease ran out mid-job and someone else owns the row now. Not a failure of
-# the record: whatever the current owner decides is the answer.
-CLAIM_LOST = "claim_lost"
 
 # Pipeline steps, recorded in jobs.payload for the operator. A hint only: the
 # retry path still re-reads the catalog and the object store.
@@ -127,112 +123,11 @@ class IngestService:
                 self._jobs.request_recheck_run(dedupe, record.id)
         return skipped
 
-    # ---- worker loop ----
-
-    def drain(self, max_jobs: int | None = None) -> list[IngestOutcome]:
-        """Run claimed jobs one at a time.
-
-        One job in flight means one in-flight source request per provider, which
-        is the configured limit for a single local worker.
-        """
-        self._jobs.reap_exhausted()
-        outcomes: list[IngestOutcome] = []
-        budget = max_jobs if max_jobs is not None else self._settings.ingest_batch_limit
-        for _ in range(budget):
-            job = self._jobs.claim(lease_seconds=self._settings.ingest_lease_seconds)
-            if job is None:
-                break
-            outcomes.append(self.run_claimed(job))
-        return outcomes
-
-    def run_claimed(self, job: ClaimedJob) -> IngestOutcome:
-        external_id = str(job.payload.get("external_id", ""))
-        try:
-            with LeaseKeeper(
-                self._jobs,
-                job,
-                lease_seconds=self._settings.ingest_lease_seconds,
-                deadline_seconds=self._settings.ingest_job_deadline_seconds,
-            ) as lease:
-                outcome = self._execute(job, external_id, lease)
-        except ClaimLost:
-            return self._abandon(job, external_id, "claim_lost")
-        except PermanentFailure as failure:
-            # Another attempt cannot change this answer, so skip the retry
-            # budget entirely and dead-letter the row for inspection.
-            if not self._jobs.mark_dead(job, failure.reason):
-                return self._abandon(job, external_id, failure.reason)
-            logger.warning(
-                "ingest job dead external_id=%s reason=%s attempt=%s",
-                external_id,
-                failure.reason,
-                job.attempt_count,
-            )
-            return IngestOutcome(external_id, catalog.JOB_DEAD, failure.reason, job_settled=True)
-        except TransientFailure as failure:
-            return self._schedule_retry(job, external_id, failure)
-        except ObjectStoreUnavailable as failure:
-            return self._schedule_retry(
-                job, external_id, TransientFailure("object_store", str(failure))
-            )
-        if not outcome.job_settled and not self._jobs.succeed(job):
-            return self._abandon(job, external_id, outcome.result)
-        return outcome
-
-    def _abandon(self, job: ClaimedJob, external_id: str, detail: str) -> IngestOutcome:
-        """Walk away without writing. The row belongs to its current claim.
-
-        The work this attempt did is not lost: objects are content-addressed
-        and the catalog is what a later attempt reads, so whoever holds the job
-        now reaches the same place.
-        """
-        logger.warning(
-            "ingest job claim lost external_id=%s attempt=%s detail=%s",
-            external_id,
-            job.attempt_count,
-            detail,
-        )
-        return IngestOutcome(external_id, CLAIM_LOST, detail, job_settled=True)
-
-    def _schedule_retry(
-        self,
-        job: ClaimedJob,
-        external_id: str,
-        failure: TransientFailure,
-    ) -> IngestOutcome:
-        if job.attempts_exhausted:
-            if not self._jobs.mark_dead(job, failure.reason):
-                return self._abandon(job, external_id, failure.reason)
-            logger.warning(
-                "ingest job dead after retries external_id=%s reason=%s attempts=%s",
-                external_id,
-                failure.reason,
-                job.attempt_count,
-            )
-            return IngestOutcome(external_id, catalog.JOB_DEAD, failure.reason, job_settled=True)
-        delay = failure.retry_after
-        if delay is None:
-            delay = job_module.backoff_seconds(
-                job.attempt_count,
-                base_seconds=self._settings.ingest_backoff_base_seconds,
-                max_seconds=self._settings.ingest_backoff_max_seconds,
-            )
-        if not self._jobs.retry_later(job, failure.reason, delay):
-            return self._abandon(job, external_id, failure.reason)
-        logger.info(
-            "ingest job retrying external_id=%s reason=%s attempt=%s delay=%.1f",
-            external_id,
-            failure.reason,
-            job.attempt_count,
-            delay,
-        )
-        return IngestOutcome(
-            external_id, catalog.JOB_RETRY_WAIT, failure.reason, job_settled=True
-        )
-
     # ---- pipeline ----
 
-    def _execute(self, job: ClaimedJob, external_id: str, lease: LeaseKeeper) -> IngestOutcome:
+    def execute(
+        self, job: ClaimedJob, external_id: str, check_active: Callable[[], None]
+    ) -> IngestOutcome:
         provider_id = UUID(str(job.payload["provider_id"]))
         record = self._repository.get_source_record(provider_id, external_id)
         if record is None:
@@ -247,11 +142,11 @@ class IngestService:
 
         item: MetItem | None = None
         if not self._has_current_cc0_evidence(record):
-            record, item = self._run_rights_gate(job, record, external_id, lease)
+            record, item = self._run_rights_gate(job, record, external_id, check_active)
             if record.eligibility_status != catalog.ELIGIBILITY_ELIGIBLE_CC0:
                 return IngestOutcome(external_id, NEGATIVE_CACHED, record.eligibility_status)
 
-        return self._store_eligible(job, record, item, external_id, lease)
+        return self._store_eligible(job, record, item, external_id, check_active)
 
     def _has_current_cc0_evidence(self, record: SourceRecord) -> bool:
         """Skip the metadata request when the stored decision still stands.
@@ -275,11 +170,11 @@ class IngestService:
         job: ClaimedJob,
         record: SourceRecord,
         external_id: str,
-        lease: LeaseKeeper,
+        check_active: Callable[[], None],
     ) -> tuple[SourceRecord, MetItem]:
         self._jobs.merge_payload(job, {"last_step": STEP_RIGHTS_CHECK})
         item = self._adapter.fetch_item(external_id)
-        lease.check()
+        check_active()
         decision = rights.decide(
             item,
             self._adapter.policy_url,
@@ -326,7 +221,7 @@ class IngestService:
         record: SourceRecord,
         item: MetItem | None,
         external_id: str,
-        lease: LeaseKeeper,
+        check_active: Callable[[], None],
     ) -> IngestOutcome:
         url = validate_url(record.original_url, self._settings.image_host_allowlist, what="image")
         if item is None:
@@ -341,13 +236,13 @@ class IngestService:
         reused = self._reuse_stored_objects(job.payload)
         if reused is None:
             self._jobs.merge_payload(job, {"last_step": STEP_DOWNLOAD})
-            prepared = self._download(url, lease)
+            prepared = self._download(url, check_active)
             result = STORED
         else:
             prepared = reused
             result = RESUMED
 
-        lease.check()
+        check_active()
         self._jobs.merge_payload(job, {"last_step": STEP_STORE, "stored": prepared})
         asset_id = self._repository.store_asset(
             job=job,
@@ -384,16 +279,16 @@ class IngestService:
         )
         return IngestOutcome(external_id, result, prepared["sha256"], job_settled=True)
 
-    def _download(self, url: str, lease: LeaseKeeper) -> dict[str, Any]:
+    def _download(self, url: str, check_active: Callable[[], None]) -> dict[str, Any]:
         """The only image request in the pipeline, followed by both object puts."""
-        fetched = self._fetcher.fetch(url, guard=lease.check)
+        fetched = self._fetcher.fetch(url, guard=check_active)
         processed = images.process(
             fetched.body,
             fetched.content_type,
             max_pixels=self._settings.ingest_max_image_pixels,
             thumbnail_max_pixels=self._settings.ingest_thumbnail_max_pixels,
         )
-        lease.check()
+        check_active()
         original_key = content_key(ORIGINAL_PREFIX, processed.sha256, processed.extension)
         thumbnail_key = content_key(THUMBNAIL_PREFIX, processed.sha256, images.THUMBNAIL_EXTENSION)
         self._objects.put(original_key, processed.original, processed.mime_type, processed.sha256)

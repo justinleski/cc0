@@ -17,7 +17,6 @@ from app.ingestion.models import Asset, Evidence, SourceRecord
 from app.ingestion.repository import IngestionRepository
 from app.ingestion.service import (
     ALREADY_STORED,
-    CLAIM_LOST,
     NEGATIVE_CACHED,
     RESUMED,
     SKIPPED_CACHE,
@@ -25,6 +24,7 @@ from app.ingestion.service import (
     IngestService,
 )
 from app.integrations.object_store import ObjectStore, ObjectStoreUnavailable
+from app.worker.ingest import CLAIM_LOST, IngestWorker
 from app.worker.jobs import ClaimedJob, ClaimLost, JobStore
 
 
@@ -66,15 +66,19 @@ def ingestion():
         {"provider_id": str(record.provider_id), "external_id": record.external_id},
         uuid4(),
     )
-    service = IngestService(
+    service = IngestWorker(
         settings=settings,
-        adapter=MetAdapter(source),
-        image_fetcher=source,
-        object_store=objects,
-        repository=repository,
         job_store=jobs,
-        embedding_model_key="fake",
-        embedding_model_version="deterministic-v1",
+        service=IngestService(
+            settings=settings,
+            adapter=MetAdapter(source),
+            image_fetcher=source,
+            object_store=objects,
+            repository=repository,
+            job_store=jobs,
+            embedding_model_key="fake",
+            embedding_model_version="deterministic-v1",
+        ),
     )
     return service, repository, jobs, objects, source, record, job
 
@@ -137,7 +141,7 @@ def test_fresh_negative_cache_skips_enqueue_and_claimed_work_without_requests(in
     record = replace(record, eligibility_status=status)
     repository.upsert_source_record.return_value = record
     repository.get_source_record.return_value = record
-    assert service.enqueue([record.external_id]) == {record.external_id: SKIPPED_CACHE}
+    assert service.service.enqueue([record.external_id]) == {record.external_id: SKIPPED_CACHE}
     assert service.run_claimed(job).result == SKIPPED_CACHE
     assert source.requests == []
     objects.put.assert_not_called()
@@ -150,7 +154,7 @@ def test_fresh_negative_cache_skips_enqueue_and_claimed_work_without_requests(in
 def test_existing_asset_skips_all_external_work(ingestion, status):
     service, repository, jobs, objects, source, record, job = ingestion
     repository.get_asset.return_value = Asset(uuid4(), status, "digest", "original", "thumbnail")
-    assert service.enqueue([record.external_id]) == {record.external_id: ALREADY_STORED}
+    assert service.service.enqueue([record.external_id]) == {record.external_id: ALREADY_STORED}
     assert service.run_claimed(job).result == ALREADY_STORED
     assert source.requests == []
     objects.put.assert_not_called()

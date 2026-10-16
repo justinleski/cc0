@@ -67,7 +67,14 @@ incrementally when substantive work warrants it, preserving their behavior.
 [Ingestion](../systems/ingestion.md#layers-and-transaction-boundaries) now uses
 feature-local service, repository, queries and models. The embedding job path
 uses the same feature-local layers under `app/embeddings/`. Shared job and lease
-mechanics retain their worker boundaries. Frontend
+mechanics retain their worker boundaries. The execution path is worker entrypoint
+→ concrete worker adapter → feature service → feature repository → query builders.
+Adapters own draining, claiming/reaping, lease renewal lifecycle, retry policy and
+infrastructure settlement. Feature services own business workflow sequencing and
+domain decisions. Repository transactions continue to fence claims and atomically
+settle jobs with feature writes; this atomic settlement must not be lifted into
+adapters. Feature-driven enqueue decisions and progress hints may use the shared
+job store without taking ownership of execution. Frontend
 organization is outside this decision.
 
 For search, preserve the existing HTTP routes, response shapes, error behavior,

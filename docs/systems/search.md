@@ -100,15 +100,20 @@ feature-local layers too; shared worker job and lease machinery stays in the
 worker package.
 
 Embedding jobs use the same feature-local layering:
-[service.py](../../backend/app/embeddings/service.py) orchestrates claim processing,
-object reads, inference and retries; [models.py](../../backend/app/embeddings/models.py)
+[worker/embed.py](../../backend/app/worker/embed.py) owns draining, model-filtered
+claiming, lease lifecycle, retries and failure settlement.
+[service.py](../../backend/app/embeddings/service.py) retains payload/model and
+asset validation, object reads, inference, and publication sequencing; [models.py](../../backend/app/embeddings/models.py)
 holds the result and asset dataclasses; [repository.py](../../backend/app/embeddings/repository.py)
 owns connection scopes and claim-fenced writes; and
 [queries.py](../../backend/app/embeddings/queries.py) holds SQL and bound-parameter
 construction. [provider.py](../../backend/app/embeddings/provider.py) defines
 the provider and fake, while [openclip.py](../../backend/app/embeddings/openclip.py)
 loads the optional model. The worker runtime supplies the concrete repository,
-shared job store and object store. Both the new-vector and existing-vector
+shared job store and object store, and injects the service into `EmbedWorker`.
+The adapter calls `prepare()` before claiming and `execute(job)` inside the lease.
+The service exposes its model identity for the claim filter without owning claims.
+Both the new-vector and existing-vector
 paths lock the claim, publish the asset, and settle the job in one transaction.
 Object reads and inference happen after read connections close and before the
 write transaction starts.

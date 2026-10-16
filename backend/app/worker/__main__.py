@@ -83,7 +83,7 @@ def _run_embed(runtime: WorkerRuntime, max_jobs: int | None) -> int:
     code = 0
     rounds = 1 if max_jobs is not None else 20
     for _ in range(rounds):
-        outcomes = runtime.embed_service.drain(max_jobs)
+        outcomes = runtime.embed_worker.drain(max_jobs)
         code = max(code, _report_embed(outcomes))
         if not outcomes or code or max_jobs is not None:
             break
@@ -96,11 +96,11 @@ def _dispatch(args: argparse.Namespace, runtime: WorkerRuntime) -> int:
         external_ids = args.object_ids or service.discover(args.limit)
         for external_id, reason in service.enqueue(list(external_ids)).items():
             logger.info("skipped external_id=%s reason=%s", external_id, reason)
-        ingest_code = _report(service.drain())
+        ingest_code = _report(runtime.ingest_worker.drain())
         return max(ingest_code, _run_embed(runtime, None))
 
     if args.command == "drain":
-        ingest_code = _report(service.drain(args.max_jobs))
+        ingest_code = _report(runtime.ingest_worker.drain(args.max_jobs))
         return max(ingest_code, _run_embed(runtime, args.max_jobs))
 
     if args.command == "reembed":

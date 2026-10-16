@@ -78,7 +78,10 @@ Ingestion boundary tests (`test_ingestion_service.py`,
 `test_ingestion_queries.py`, `test_ingestion_repository.py`) check rights before
 image fetch, cache/asset skips, durable resume, retries and claim loss, bound
 parameters, and connection cleanup and rollback for atomic catalog/job writes.
-They do not replace the real database tests for transaction or fencing semantics.
+`test_worker_execution.py` checks adapter delegation, lease scope, retry/backoff,
+attempt exhaustion, stale settlement, and exception propagation, and guards against
+execution lifecycle returning to feature services. These tests do not replace the
+real database tests for transaction or fencing semantics.
 
 Embedding boundary tests (`test_embedding_service.py` and
 `test_embedding_repository.py`) check object read and inference ordering,
