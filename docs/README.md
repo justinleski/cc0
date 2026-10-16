@@ -39,7 +39,8 @@ evolve.
   Met adapter, rights gate, fetch gate, the job row as dead letter, resume
   rules, and operator commands.
 - [Search and embeddings](systems/search.md)
-  The embed job, hybrid ranking, quoted phrases, and the public provenance view.
+  The embed job, hybrid ranking, quoted phrases, public provenance view, and
+  a code-reading guide to the feature-local service/repository/query layers.
 
 ## Decisions
 
@@ -47,6 +48,7 @@ evolve.
 - [ADR-0002: PostgreSQL with pgvector as the single store](decisions/0002-postgres-pgvector.md)
 - [ADR-0003: Separate database logins per component](decisions/0003-database-roles.md)
 - [ADR-0004: Application processes run on the host](decisions/0004-host-processes.md)
+- [ADR-0005: Feature-based layered architecture](decisions/0005-feature-based-layered-architecture.md)
 
 ## Not documented yet
 

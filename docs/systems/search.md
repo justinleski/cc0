@@ -40,26 +40,80 @@ flowchart TD
   cosine --> fuse
 ```
 
-| Module | Responsibility |
-|---|---|
-| [provider.py](../../backend/app/embeddings/provider.py) | Contract, fake provider, L2 normalization |
-| [openclip.py](../../backend/app/embeddings/openclip.py) | Optional loader. Imported only when `EMBEDDING_PROVIDER=openclip` |
-| [worker/embed.py](../../backend/app/worker/embed.py) | Claim, read the original, insert the vector, publish |
-| [search/parse.py](../../backend/app/search/parse.py) | Balanced phrases and stripped stray quotes |
-| [search/rank.py](../../backend/app/search/rank.py) | Reciprocal rank fusion |
-| [search/service.py](../../backend/app/search/service.py) | Query validation, embeddings, rank fusion, cursors, and suggestions |
-| [search/repository.py](../../backend/app/search/repository.py) | Typed repository contract and PostgreSQL queries, filters, connection scopes, and row mapping |
-| [search/models.py](../../backend/app/search/models.py) | Shared search inputs and results, independent of database driver types |
+### Feature-based layered modular monolith
 
-`SearchService` receives a `SearchRepository` and an embedding provider. Routes
-construct `PostgresSearchRepository` with the existing API engine; construction
-does not check out a connection. The service computes query vectors before
-requesting candidates, and the repository reads lexical and semantic candidates
-on one connection. Fusion and cursor snapshots stay in the service. Repository
-inputs are typed filters, parsed queries, and keyset positions, never SQL
-fragments. Card retrieval rechecks public visibility and preserves the requested
-ID order while omitting hidden assets. Creator lookup returns ranked names; the
-service decides whether to suggest one. Worker stores are separate and unchanged.
+The backend convention and incremental adoption policy are recorded in
+[ADR-0005](../decisions/0005-feature-based-layered-architecture.md).
+
+Search is packaged by feature, with HTTP, orchestration, persistence, and SQL
+construction separated inside that feature. These are in-process module
+boundaries, not independently deployed services. The arrangement supports
+DDD-style boundaries but does not by itself implement DDD. PostgreSQL remains
+the intentional search backend; there is no generic repository framework,
+abstract repository interface, Unit of Work, or new dependency.
+
+```text
+app/search/
+├── router.py
+├── service.py
+├── repository.py
+├── queries.py
+├── models.py
+├── cursor.py
+├── parse.py
+└── rank.py
+```
+
+Read the modules in the following order to follow a request. The package also
+contains its Python `__init__.py` marker.
+
+| Module | Responsibility and functions to inspect |
+|---|---|
+| [router.py](../../backend/app/search/router.py) | HTTP endpoints, Pydantic response models, error translation, and `_service()` wiring |
+| [service.py](../../backend/app/search/service.py) | `search()`, `_ranked()`, `_browse()`, `_page_snapshot()`, `_suggest()`: validation, embedding generation, RRF coordination, pagination decisions, and suggestions |
+| [repository.py](../../backend/app/search/repository.py) | Concrete `SearchRepository`: connections, query execution, `_candidate_ids()` and `_card()` row mapping; `asset()`, `related()`, `creators()`, `browse()`, `candidates()`, and `cards()` database operations |
+| [queries.py](../../backend/app/search/queries.py) | SQL constants, `_filters()`, `_vector_literal()`, `browse_query()`, `lexical_query()`, and `semantic_query()`; builders return SQL and bound parameters without I/O |
+| [models.py](../../backend/app/search/models.py) | Result dataclasses and typed filters, browse positions, and candidate lists; no HTTP or database driver types |
+| [cursor.py](../../backend/app/search/cursor.py) | Encoding, decoding, browse-position parsing, ranked snapshots, cursor-kind checks, and scope validation |
+| [parse.py](../../backend/app/search/parse.py) | Balanced required phrases and stripped stray quotes |
+| [rank.py](../../backend/app/search/rank.py) | Candidate limits, snapshot limit, and deterministic RRF fusion |
+
+### How to observe the patterns and invariants
+
+| Pattern or invariant | Where to follow it in the code |
+|---|---|
+| Composition and dependency injection | `main.create_app()` registers the feature router. `router._service()` supplies the concrete repository and existing embedding provider to the service, using the existing application engine. Service tests supply an in-memory repository through the same constructor. |
+| Connection ownership | Repository construction stores the engine without checkout. `service._ranked()` finishes `embed_text()` before `repository.candidates()` opens one connection for both lexical and semantic reads. Context managers release it on success or failure. |
+| Public CC0 visibility | All asset SQL in `queries.py` uses `catalog.READY_ASSETS_VIEW`, including the related seed and candidates. Follow migration 0006 for the latest-evidence predicate. Creator lookup uses `creators`. |
+| Parameterized SQL | Query builders bind user values separately. Dynamic SQL contains only trusted catalog identifiers, fixed clauses, and generated phrase placeholders. `_filters()` makes quoted phrases mandatory `simple` dictionary predicates. |
+| Ranking isolation | `queries.lexical_query()` and `semantic_query()` preserve candidate limits and ID tie-breakers. Semantic and related queries bind both model identity fields. `service._ranked()` calls `rank.fuse()` and applies the snapshot cap. |
+| Snapshot pagination | The service constructs scope with `_rank_scope()`; `cursor.require_same_scope()` validates it. Later pages use stored IDs without repeating inference or candidate retrieval. `repository.cards()` rechecks visibility, omits hidden IDs, and restores the stored order. |
+| Keyset pagination | `_browse()` requests `limit + 1`; `queries.browse_query()` uses descending `(ingested_at, id)` order and the matching tuple comparison. Cursor serialization stays in `cursor.py`. |
+| Thin HTTP boundary | `router.py` translates existing typed results and errors to unchanged response models, status codes, and `/api/v1` routes. The service has no FastAPI imports or SQL statements. |
+
+The changes are structural. HTTP interfaces, cursor formats, ranking semantics,
+error behavior, views, and database grants are preserved. The internal service
+constructor accepts a concrete repository instead of an engine. SQL is kept in
+Python for review alongside its parameter builders; external SQL files and
+stored functions are unnecessary here. Ingestion and worker stores retain their
+existing boundaries; this layout is the completed search refactor, not a claim
+that every feature has already been reorganized.
+
+The embedding subsystem remains separate:
+[provider.py](../../backend/app/embeddings/provider.py) defines the provider and
+fake, [openclip.py](../../backend/app/embeddings/openclip.py) loads the optional
+model, and [worker/embed.py](../../backend/app/worker/embed.py) publishes vectors.
+
+### Verification
+
+`test_search_service.py` checks orchestration with an in-memory repository.
+`test_search_queries.py` checks parameter binding, required phrases, year and
+keyset predicates, public-view reads, model filtering, and deterministic order.
+`test_search_repository.py` observes actual service/repository call ordering and
+connection release when a candidate query fails. Existing PostgreSQL integration
+tests remain the authority for executed SQL, rights revocation, and related
+visibility. Commands and infrastructure requirements are in
+[Lint and tests](../lint-test.md).
 
 ## What a row means
 

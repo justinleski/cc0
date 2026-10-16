@@ -68,6 +68,11 @@ keysets, encoding before candidate retrieval, quoted and mixed queries, rank
 fusion, cursor scope validation, suggestions, and snapshot positions when an
 asset is suppressed. SQL ranking and visibility remain integration-tested
 through the real PostgreSQL repository and HTTP routes.
+`test_search_queries.py` checks extracted builders for bound user inputs,
+mandatory phrase predicates, year/keyset filters, public visibility, model
+identity, candidate limits, and ordering. `test_search_repository.py` verifies
+that inference precedes checkout, both candidate queries share a connection,
+and failures release that connection.
 
 `python -m app.embeddings` loads OpenCLIP after `pip install -e "backend[embeddings]"`
 and checks that a related image/text pair outranks an unrelated one. It compares

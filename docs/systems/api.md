@@ -90,12 +90,13 @@ flowchart TB
   through `ready_assets`. Query text is encoded before a connection is checked
   out of this pool, and each process runs one encode at a time, so inference
   does not occupy a pooled connection.
-- Catalog routes construct `SearchService` with a `PostgresSearchRepository`
+- Catalog routes construct `SearchService` with a `SearchRepository`
   backed by that same engine and the process's embedding provider. The repository
-  owns SQL and row mapping; the service owns query parsing, embedding calls,
+  owns connections, SQL execution, and row mapping; `app/search/queries.py`
+  owns SQL construction. The service owns query parsing, embedding calls,
   fusion, cursors, and suggestion decisions. Their shared inputs and results are
   typed data classes in `app/search/models.py`. HTTP models and response formats
-  remain in `app/api/search.py`.
+  remain in `app/search/router.py`.
 - `statement_timeout` is `SET LOCAL` inside the probe transaction, not an
   engine-wide connection option, so a later request on the same connection
   does not inherit the readiness budget.
@@ -127,6 +128,9 @@ flowchart TB
 
 ## Design decisions
 
+- Backend features keep their HTTP, service, and persistence layers together,
+  with search as the reference implementation:
+  [ADR-0005](../decisions/0005-feature-based-layered-architecture.md).
 - The API, the worker, and the frontend run on the host against Compose
   data services, and are not containerized yet: [ADR-0004](../decisions/0004-host-processes.md).
 - Readiness uses the restricted `cc0_api` login so the check fails when
