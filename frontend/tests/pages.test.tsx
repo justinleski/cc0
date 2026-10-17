@@ -9,6 +9,7 @@ import Loading from "@/app/loading";
 import ErrorPage from "@/app/error";
 import { CatalogImage } from "@/components/CatalogImage";
 import { CatalogFilters } from "@/components/CatalogFilters";
+import { BoardProvider } from "@/state/boards";
 
 vi.mock("next/image", () => ({ default: ({ unoptimized, priority, ...props }: ImageProps) => {
   void unoptimized; void priority;
@@ -59,7 +60,7 @@ it("renders asset metadata and source evidence with original retrieval", async (
   // RelatedWorks is an async server component; test its resolved output separately.
   const page = await WorkPage({ params: Promise.resolve({ id: "one" }) });
   const { renderToStaticMarkup } = await import("react-dom/server");
-  const html = renderToStaticMarkup(page);
+  const html = renderToStaticMarkup(<BoardProvider>{page}</BoardProvider>);
   expect(html).toContain("Rights and provenance");
   expect(html).toContain("CC0 verified");
   expect(html).toContain("https://example.org/rights");

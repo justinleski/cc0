@@ -1,5 +1,7 @@
 """Owner-scoped transactions. A parent row lock serializes every board mutation."""
 
+from __future__ import annotations
+
 from typing import Any, Literal
 from uuid import UUID
 

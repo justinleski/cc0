@@ -64,8 +64,9 @@ links use backend cursors without reordering results. Route loading, catalog
 errors with retry, empty pages, detail 404, related loading/empty/error and image
 failure fallbacks are explicit. Provenance links permit only HTTP(S) URLs without
 credentials. Mock fixtures are archived outside `public/`; old numeric mock detail
-IDs fail UUID validation. Mock boards display a deferred-feature message, with
-no persistent boards, auth, exports or new recommendation algorithm.
+IDs fail UUID validation. This section describes the original catalog slice;
+private boards and local sign-in are now implemented in the
+[board system](boards.md). Board recommendations and exports remain future work.
 
 ## Validation and limits
 
@@ -102,5 +103,6 @@ but use synthetic test images and are not a live museum ingest.
 No blocker remains for this slice's catalog integration. Real semantic relevance
 still requires the previously deferred OpenCLIP checkpoint and re-embedding.
 The demonstrated catalog uses synthetic ingestion fixtures; live provider ingest
-and production storage identities remain separate operational work. No schema,
-authentication, persistent boards, board recommendations or exports were added.
+and production storage identities remain separate operational work. This slice
+did not add schema, authentication, boards, recommendations or exports; later M3
+slices added local authentication and private boards.

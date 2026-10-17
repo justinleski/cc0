@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import { CatalogError, getWork } from "@/api/catalog";
 import { CatalogImage } from "@/components/CatalogImage";
 import { RelatedWorks } from "@/components/RelatedWorks";
+import { BoardActions } from "@/components/BoardActions";
 
 export default async function WorkPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -41,6 +42,7 @@ export default async function WorkPage({ params }: { params: Promise<{ id: strin
           <a href={work.originalSrc}>View original image</a>
         </div>
       </section>
+      <BoardActions workId={id} />
       <section className="mt-16">
         <h2 className="mb-6 text-xl leading-tight">Related works</h2>
         <Suspense fallback={<p role="status">Loading related works…</p>}><RelatedWorks id={id} /></Suspense>

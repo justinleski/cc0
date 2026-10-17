@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { searchFields } from "@/api/catalog-query";
 import { usePathname, useSearchParams } from "next/navigation";
+import { useBoards } from "@/state/boards";
 
 export function SiteHeader() {
   const pathname = usePathname();
@@ -10,6 +11,7 @@ export function SiteHeader() {
   const query = params.get("q") ?? "";
   const browseCurrent = pathname === "/";
   const boardsCurrent = pathname.startsWith("/boards");
+  const { account, signOut } = useBoards();
 
   return (
     <header className="border-b border-line bg-paper">
@@ -43,6 +45,8 @@ export function SiteHeader() {
             className="w-full rounded-control border border-line bg-paper-raised px-3 py-2 text-ink placeholder:text-muted"
           />
         </form>
+        {account ? <button type="button" className="text-sm text-accent" onClick={signOut}>Switch user ({account})</button>
+          : <Link className="text-sm text-accent" href="/boards">Local sign in</Link>}
       </div>
     </header>
   );

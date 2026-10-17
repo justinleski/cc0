@@ -1,63 +1,92 @@
 # Frontend
 
-The Next.js frontend browses the real backend catalog. Run the API and data
-services using the [root quick start](../README.md), then from `frontend/`:
+The Next.js frontend browses the real backend catalog and manages private boards.
+The [root quick start](../README.md) can build and start the complete stack with
+`docker compose up --build -d`. For frontend hot reload, run the API and data
+services using the host workflow there, then from `frontend/`:
 
 ```bash
 npm ci
 npm run dev
 ```
 
-Use Node 22 (`.nvmrc`). Open http://127.0.0.1:3000. The server calls
+Use Node 22 (`.nvmrc`). Open http://127.0.0.1:3000. The Next.js server calls
 `http://127.0.0.1:8000` by default; copy `.env.example` to `.env.local` to change
-`CATALOG_API_URL`. This is a server-only setting, with no browser credentials
-or CORS configuration needed. A Next.js server is required; this slice cannot
-be exported as static HTML.
+`CATALOG_API_URL`. This is a server-only setting. Catalog reads and authenticated
+board requests use same-origin Next.js routes, so no browser CORS setup is needed.
+A Next.js server is required; this app cannot be exported as static HTML.
 
-Search/filter forms submit native GET requests. Search uses the existing hybrid backend ranking. Quotes require a phrase;
-quotes-only searches use lexical ranking. Exact creator/location and year
-filters are sent to the backend. Browse is newest first, search is relevance
-order, and pagination follows opaque backend cursors. Changing search or filters
-resets pagination. Creator lookup provides up to 50 choices; narrow by name
-when necessary. No client-side search, ranking or filter implementation exists.
+## Catalog and boards
 
-Details show source and rights evidence links, verification/ingestion dates,
-and related images from the active embedding model. Image URLs use the same-origin
-route `/api/catalog/{id}/image/{thumbnail|original}`, which forwards to the
-backend's visibility-gated private-object read. Responses are uncached and
+Search/filter forms submit native GET requests. Search uses the backend hybrid
+ranking. Quotes require a phrase; quotes-only searches use lexical ranking.
+Exact creator/location and year filters are sent to the backend. Browse is
+newest first, search is relevance order, and pagination follows opaque backend
+cursors. Changing search or filters resets pagination.
+
+Asset details show source and rights evidence links, dates and related images.
+Image URLs use `/api/catalog/{id}/image/{thumbnail|original}`, which forwards
+to the backend visibility-gated private-object read. Responses are uncached and
 `next/image` optimization is disabled to prevent cached media from bypassing
-subsequent rights checks. Previously delivered bytes cannot be recalled.
+later rights checks. Previously delivered bytes cannot be recalled.
 
-`src/api/catalog.ts` owns HTTP and response adaptation; `catalog-query.ts` owns
-URL parameters. Components receive presentation models. The existing masonry,
-guided results, tiles, and design tokens are retained. Archived mock data and
-images live under `fixtures/`, outside the public tree. Mock board pages are
-replaced with a deferred-feature message; the session board provider is retained
-for future work but is not mounted. No authentication or persistent boards exist.
+To use boards locally, enable the [backend local auth
+adapter](../docs/systems/boards.md#local-authentication) in the root `.env`:
+
+```dotenv
+APP_ENV=local
+AUTH_MODE=local
+AUTH_LOCAL_SIGNING_KEY=<a private random value of at least 32 bytes>
+```
+
+Restart the API after changing auth configuration. From `backend/`, run
+`.venv/bin/python -m app.auth token alice` or `... token bob`. Open **Boards**,
+choose the account and paste its one-hour token. The header's **Switch user**
+button clears the current board state before another sign-in. There is no
+browser token issuer or production sign-in flow. The token is kept in browser
+session storage for reloads; boards and pins always come from FastAPI/Postgres.
+
+Create a board on the Boards page. Open a verified catalog work and select
+**Save to**; manage notes, order, metadata and removal on the board page. Empty
+boards and service/authentication failures have visible states. Board deletion
+and pin removal ask for confirmation. The backend remains responsible for
+ownership and CC0 eligibility.
+
+`src/api/catalog.ts` owns catalog transport and presentation adaptation;
+`src/api/boards.ts` owns board transport and errors. The mounted board provider
+holds current-account data, discards stale responses after account switching,
+and reconciles successful mutations from API responses. The existing masonry,
+guided results, tiles and design tokens remain in use. Archived mock catalog
+assets live under `fixtures/`, outside the public tree.
+
+## Validation
 
 ```bash
-npm test             # API and component tests, no running backend needed
+npm test
 npm run typecheck
 npm run lint
 npm run build
 ```
 
-For a real browser check, start the API and frontend, ingest and embed at least
-two eligible assets (`backend/.venv/bin/python -m app.worker ingest` from the
-repository root), then:
+For real browser tests, run the API with local auth, migrate the database,
+ingest and embed at least three eligible assets, and run the production frontend.
+The tests use real HTTP, PostgreSQL results and object bytes. The board test
+uses CLI tokens; issue both within an hour of running it:
 
 ```bash
-npx playwright install chromium
+# From the repository root, with the API on port 8000 and frontend on 3000:
+export E2E_ALICE_TOKEN="$(cd backend && .venv/bin/python -m app.auth token alice)"
+export E2E_BOB_TOKEN="$(cd backend && .venv/bin/python -m app.auth token bob)"
+cd frontend
 CATALOG_API_URL=http://127.0.0.1:8000 CATALOG_UI_URL=http://127.0.0.1:3000 npm run test:e2e
 ```
 
-The browser test uses real HTTP endpoints, PostgreSQL results and object bytes;
-it does not intercept requests or modify catalog records. It covers browse,
-pagination, quoted search, exact filters, empty results, details, provenance,
-originals, related navigation and missing assets. It saves a provenance screenshot
-to `test-results/catalog-provenance.png`. Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` to
-use an already-installed Chromium binary if needed.
-
-See [catalog system](../docs/systems/catalog-frontend.md) for contracts, architecture
-and limitations. [design tokens](../design/tokens/tokens.css) remain the visual
-source of truth.
+The catalog browser test covers browse, search, filters, details, provenance,
+media and related navigation. The board browser test signs in as Alice, searches
+and saves real assets, edits notes and order, reloads, switches to Bob, checks
+backend denial of Alice's board UUID, and exercises missing assets and a network
+failure. The backend PostgreSQL integration suite additionally checks a real
+stored but ineligible asset, rights suppression, and concurrent board writes.
+Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` to use an installed Chromium binary.
+See [board system](../docs/systems/boards.md) and [catalog
+system](../docs/systems/catalog-frontend.md) for contracts and limitations.

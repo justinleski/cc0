@@ -1,5 +1,7 @@
 """Board business validation. Persistence owns authorization and atomic mutations."""
 
+from __future__ import annotations
+
 from uuid import UUID
 
 from app.boards.models import Board, InvalidBoardChange

@@ -1,6 +1,6 @@
-# Private boards and local authentication (M3 slice 2)
+# Private boards and local authentication (M3 slices 2 and 3)
 
-Status: Implemented backend. Related: [API](api.md), [storage](storage.md),
+Status: Implemented backend and frontend. Related: [API](api.md), [storage](storage.md),
 [search](search.md), [ADR-0003](../decisions/0003-database-roles.md),
 [ADR-0005](../decisions/0005-feature-based-layered-architecture.md),
 [MVP spec](../mvp-spec.md#8-boards-authentication-and-export-mvp).
@@ -85,8 +85,33 @@ recommendations.
 | `DELETE /api/v1/boards/{id}/items/{asset_id}` | Remove pin |
 | `PUT /api/v1/boards/{id}/items/order` | Set `{asset_ids: [...]}` for visible pins |
 
-Board endpoints and errors send `Cache-Control: no-store`. There is no frontend
-connection yet; the existing frontend board screen remains deferred.
+Board endpoints and errors send `Cache-Control: no-store`.
+
+## Frontend workflow (slice 3)
+
+The Next.js app mounts `BoardProvider` in the root layout. `src/api/boards.ts`
+is the typed client integration layer. Its same-origin `/api/boards` route
+forwards authenticated requests to FastAPI with caching disabled. Board lists,
+details and every mutation come from the API; session storage holds only the
+one-hour local bearer token so a reload can restore the session. There are no
+seed boards or session-stored pins. The UI decodes the token subject only to
+select the local account label; FastAPI verifies the signature and owner on
+every request. The backend CLI remains the only token issuer.
+
+From Boards, select Alice or Bob and paste the corresponding CLI token. The
+header switches accounts by clearing the token and all board state before a new
+sign-in. Requests started under the prior identity cannot update the new state.
+The provider fetches the paginated owner list and each board's visible pins,
+then replaces state from API responses after mutations. Board operations are
+serialized per board. Failed writes leave the current view unchanged; 404/409
+responses trigger a read to reconcile with the database. A 401 clears the local
+session. The UI shows loading, empty, service and authorization errors and
+requires confirmation before deleting a board or removing a pin.
+
+Asset detail pages provide save/remove controls. Board pages support metadata
+editing, notes, earlier/later pin order, and pin removal. Board thumbnails and
+titles use visibility-gated catalog endpoints. Browser rendering never decides
+whether an asset is eligible or whether the user owns a board.
 
 ## Validation and remaining work
 
@@ -100,7 +125,21 @@ pins, suppression, notes, reordering, duplicate races, simultaneous edits,
 constraint failures, transaction rollback, and persistence across separate API lifespans. The migration test checks role
 grants and upgrade/downgrade. Use `./scripts/check.sh` for the full check.
 
-Local bearer tokens are a development adapter. A production OIDC verifier and
-ownership-aware frontend are later work. Position updates use a board-wide row
+Local bearer tokens are a development adapter. A production OIDC verifier is
+later work. Position updates use a board-wide row
 lock and issue one update per item; the pilot board size is small, so large-board
 performance has not been measured.
+
+Slice 3 validation on 2026-10-16: the full `./scripts/check.sh` passed backend
+lint, 235 unit tests, frontend typecheck/lint and 18 frontend tests, migration,
+and 48 real-database integration tests. After a provider race regression test
+was added, the final frontend run passed 19 tests and `npm run build`. Both
+Playwright tests passed against the production frontend, authenticated FastAPI,
+PostgreSQL and RustFS. The board browser workflow covered Alice sign-in,
+real catalog search, board creation/edit/deletion, three eligible pins, note
+edits, reordering, pin removal and re-addition, reload persistence, Bob account
+switching, direct API owner denial, missing assets, an invalid token, and a
+simulated failed browser request followed by a real retry. The browser test
+deletes its board afterward. The isolated PostgreSQL board test
+also rejects a genuinely stored but ineligible asset and checks rights
+suppression. The only warning was the existing Starlette/AnyIO deprecation.
