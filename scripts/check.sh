@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Acceptance check through M2. Run from the repository root: ./scripts/check.sh
+# Acceptance check through M3 catalog browsing. Run from the repository root: ./scripts/check.sh
 #
 # Lint and unit tests run first so a code failure does not wait on container
 # images. Everything after that needs the local data services and fails when
@@ -41,6 +41,9 @@ step "backend unit tests"
 if [ "$CHECK_FRONTEND" = true ]; then
     step "frontend type check"
     (cd frontend && npm run --silent typecheck)
+
+    step "frontend tests"
+    (cd frontend && npm run --silent test)
 
     step "frontend lint"
     (cd frontend && npm run --silent lint)
