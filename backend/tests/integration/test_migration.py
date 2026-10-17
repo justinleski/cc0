@@ -174,8 +174,8 @@ def _assert_migrated(url: str, passwords: dict[str, str]) -> None:
     assert catalog.EMBEDDINGS_TABLE in tables
     assert catalog.READY_ASSETS_VIEW in views
     assert {"vector", "pg_trgm"} <= extensions
-    # Boards, exports, and users are still later milestones.
-    assert {"boards", "board_items", "exports", "users"} & tables == set()
+    assert {"boards", "board_items", "users"} <= tables
+    assert "exports" not in tables
     assert set(roles) == set(ROLE_NAMES)
     for can_login, is_super, can_create_db, can_create_role in roles.values():
         assert can_login is True
@@ -249,6 +249,12 @@ def _assert_catalog_grants(url: str) -> None:
             # providers, source records, evidence, or jobs at all.
             for privilege in ("INSERT", "UPDATE", "DELETE"):
                 assert not granted(ROLE_API, table, privilege), f"{table}.{privilege}"
+
+        for table in ("users", "boards", "board_items"):
+            for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                assert not granted(ROLE_WORKER, table, privilege)
+                expected = table != "users" or privilege in ("SELECT", "INSERT")
+                assert granted(ROLE_API, table, privilege) is expected
 
         embeddings = catalog.EMBEDDINGS_TABLE
         assert granted(ROLE_WORKER, embeddings, "SELECT")

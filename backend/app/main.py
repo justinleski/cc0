@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
+from app.boards.router import router as boards_router
 from app.core.config import Settings, get_settings
 from app.core.logging import RequestContextMiddleware, configure_logging
 from app.db.engine import create_api_engine
@@ -37,8 +38,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="cc0", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings or get_settings()
     app.add_middleware(RequestContextMiddleware)
+
+    @app.middleware("http")
+    async def catalog_no_store(request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith(("/api/v1/assets", "/api/v1/creators", "/api/v1/boards")):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     app.include_router(health_router)
     app.include_router(search_router)
+    app.include_router(boards_router)
     return app
 
 

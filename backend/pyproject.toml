@@ -13,6 +13,7 @@ dependencies = [
     "pillow==12.0.0",
     "psycopg[binary]==3.2.10",
     "pydantic-settings==2.11.0",
+    "PyJWT==2.10.1",
     "python-dotenv==1.2.4",
     "sqlalchemy==2.0.44",
     "uvicorn==0.37.0",

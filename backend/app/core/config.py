@@ -5,7 +5,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -45,6 +45,7 @@ IGNORED_AMBIENT_ENV = frozenset({"DATABASE_PASSWORD"})
 # leaving the localhost default in place. Only names actually present are considered.
 CONFIG_ENV_PREFIXES = (
     "APP_",
+    "AUTH_",
     "DATABASE",
     "MIGRATION_",
     "WORKER_",
@@ -120,8 +121,18 @@ class Settings(BaseSettings):
         super().__init__(**values)
         # After pydantic builds the model. Raising here avoids ValidationError,
         # whose payload is the whole settings dict and would print secrets.
+        self._validate_auth()
         self._reject_nonlocal_defaults()
         self._reject_embedding_width()
+
+    def _validate_auth(self) -> None:
+        if self.auth_mode == "local":
+            if "app_env" not in self.model_fields_set or self.app_env.strip().lower() not in {
+                "local", "test"
+            }:
+                raise ValueError("Local auth requires explicitly configured APP_ENV=local or test")
+            if len(self.auth_local_signing_key.get_secret_value().encode()) < 32:
+                raise ValueError("Local auth requires AUTH_LOCAL_SIGNING_KEY of at least 32 bytes")
 
     def _reject_nonlocal_defaults(self) -> None:
         # "Local", " local ", and "LOCAL" are local. Anything else is fail-closed.
@@ -166,6 +177,9 @@ class Settings(BaseSettings):
             )
         if not self.model_key.strip() or not self.model_version.strip():
             raise ValueError("MODEL_KEY and MODEL_VERSION are required")
+
+    auth_mode: Literal["disabled", "local"] = "disabled"
+    auth_local_signing_key: SecretStr = SecretStr("")
 
     app_env: str = "local"
     migration_database_url: str = Field(
