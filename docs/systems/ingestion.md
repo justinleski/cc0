@@ -294,6 +294,54 @@ never used by tests. Regenerate fixtures with
 hand-written Met-shaped data and the images are generated solids, not provider
 bytes.
 
+### Local real-image evaluation batch
+
+The existing CLI can ingest a fixed, visually varied set of Met object IDs;
+no separate seed pipeline is needed. Run from `backend/` with PostgreSQL and
+RustFS up and migrations applied. The IDs below cover architecture, landscapes,
+portraits, interiors, objects, paintings, gardens, and seascapes. Met metadata
+and image availability can change, so the worker still applies the item-level
+rights gate and validates each download. Repeating the command skips stored
+records and never overwrites existing assets. The default one-request-per-second
+pacer and job retry rules apply in network mode.
+
+```bash
+ids=(
+  436535
+  811182 839174 591827 342383 337725 205351
+  359362 267087 459189 282040 236691 336259 44696 454011 337493
+  21209 15026 334004 459254 437397 483438
+  705638 839192 704714 449330 979936 681384 364 327518
+  10997 435882 382608 343735 11380 437053 677910 436528
+  455082 853646 467642 463188 40215
+  261941 44918 10464 437854
+)
+args=()
+for id in "${ids[@]}"; do args+=(--object-id "$id"); done
+INGEST_SOURCE_MODE=network .venv/bin/python -m app.worker ingest "${args[@]}"
+```
+
+The default `fake` embedding provider publishes these assets, but its vectors
+have no visual semantics. For real image/text retrieval, install the optional
+dependency from the repository root with
+`backend/.venv/bin/pip install -e 'backend[embeddings]'`, then run from
+`backend/`:
+
+```bash
+EMBEDDING_PROVIDER=openclip MODEL_KEY=ViT-B-32 MODEL_VERSION=laion2b_s34b_b79k .venv/bin/python -m app.embeddings
+EMBEDDING_PROVIDER=openclip MODEL_KEY=ViT-B-32 MODEL_VERSION=laion2b_s34b_b79k .venv/bin/python -m app.worker reembed
+```
+
+`reembed` adds a vector for every stored asset missing this checkpoint, including
+any existing fixture assets; it preserves prior vectors. Run the API with the
+same `EMBEDDING_PROVIDER`, `MODEL_KEY`, and `MODEL_VERSION`, then start the
+frontend against that API using the [host workflow](../local-development.md).
+The API loads its model at startup, so restart it after changing the setting.
+See [search](search.md) for hybrid ranking and related-image behavior. The Met's
+[Open Access policy](https://www.metmuseum.org/hubs/open-access) and
+[API guidance](https://metmuseum.github.io/) should be checked before a later
+large live run.
+
 ## Failure handling
 
 - Every failure is classified as `TransientFailure` or `PermanentFailure` with a
