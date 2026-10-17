@@ -131,8 +131,8 @@ flowchart TB
 - Backend features keep their HTTP, service, and persistence layers together,
   with search as the reference implementation:
   [ADR-0005](../decisions/0005-feature-based-layered-architecture.md).
-- The API, the worker, and the frontend run on the host against Compose
-  data services, and are not containerized yet: [ADR-0004](../decisions/0004-host-processes.md).
+- The API, worker, and frontend can run on the host or use Compose application
+  images locally: [ADR-0004](../decisions/0004-host-processes.md).
 - Readiness uses the restricted `cc0_api` login so the check fails when
   privileges are wrong: [ADR-0003](../decisions/0003-database-roles.md).
 - The object store is reached through the S3 API so the same code path works

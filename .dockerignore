@@ -1,0 +1,15 @@
+*
+!frontend/
+!frontend/**
+!design/
+!design/**
+frontend/node_modules/
+frontend/.next/
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
+frontend/tests/
+frontend/fixtures/
+frontend/*.tsbuildinfo
+frontend/.env
+frontend/.env.*

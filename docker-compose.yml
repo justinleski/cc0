@@ -1,7 +1,20 @@
 name: cc0
 
-# Local data services only. The API, worker, and frontend are not containers yet.
+# `docker compose up --build -d` starts the complete local stack.
 # Ports bind to 127.0.0.1. Stop with `docker compose stop` so named volumes stay.
+
+x-backend: &backend
+  image: cc0-backend:local
+  build:
+    context: ./backend
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    MIGRATION_DATABASE_URL: postgresql://${POSTGRES_USER:-cc0}:${POSTGRES_PASSWORD:-cc0_local_password}@postgres:5432/${POSTGRES_DB:-cc0}
+    DATABASE_URL: postgresql://cc0_api:${CC0_API_PASSWORD:-cc0_api_local_password}@postgres:5432/${POSTGRES_DB:-cc0}
+    WORKER_DATABASE_URL: postgresql://cc0_worker:${CC0_WORKER_PASSWORD:-cc0_worker_local_password}@postgres:5432/${POSTGRES_DB:-cc0}
+    OBJECT_STORE_ENDPOINT: http://rustfs:9000
 
 services:
   postgres:
@@ -80,6 +93,44 @@ services:
         aws s3api head-bucket --bucket "$$S3_BUCKET" --endpoint-url http://rustfs:9000
         echo "RustFS bucket $$S3_BUCKET is ready"
     restart: on-failure
+
+  migrate:
+    <<: *backend
+    command: ["alembic", "-c", "backend/alembic.ini", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *backend
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rustfs-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/ready', timeout=5).close()"]
+      interval: 5s
+      timeout: 7s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      CATALOG_API_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped
 
 volumes:
   pgdata:

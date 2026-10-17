@@ -1,15 +1,19 @@
 # Local development
 
-Data services run in Compose; the API, the ingestion worker, and the frontend
-run on the host. See the [root quick start](../README.md) for installation and
-startup commands, [lint and tests](lint-test.md) for `./scripts/check.sh` and
-individual checks, and [ingestion](systems/ingestion.md) for the worker
-commands and its `INGEST_*` settings.
+`docker compose up --build -d` builds and starts the local data services, runs
+migrations once, then starts the API and frontend. The host workflow remains
+available for hot reload and debugging. See the [root quick start](../README.md)
+for both workflows, [lint and tests](lint-test.md) for `./scripts/check.sh`, and
+[ingestion](systems/ingestion.md) for worker commands and `INGEST_*` settings.
 
 ## Configuration
 
 Copy `.env.example` to `.env` for local overrides (`cp -n` so an existing file
-is left alone). Both Compose and the backend read this file. Backend fields are
+is left alone). Compose reads it when present and passes it to backend containers;
+host backend processes read it directly. In containers, Compose overrides the
+three database URLs and `OBJECT_STORE_ENDPOINT` with internal `postgres` and
+`rustfs` addresses. Host processes use the URLs and endpoint in `.env`.
+Backend fields are
 case insensitive. Unknown keys in `.env` fail startup, except the explicit
 Compose allowlist: `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`,
 `POSTGRES_PORT`, `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY`, `RUSTFS_API_PORT`,
@@ -35,8 +39,9 @@ underscore, so `DATABASE_URLL` is rejected and `DATABASE_URL` is kept.
 Unrelated names (`PATH`, `HOME`, `GITHUB_*`, npm variables) do not use those
 prefixes and stay allowed. Only names that are actually set are considered.
 
-If a host port changes, update the corresponding database URLs or object store
-endpoint too. Keep `S3_BUCKET` and `OBJECT_STORE_BUCKET` consistent. The shared
+If a host port changes, update the corresponding host-process database URLs or
+object store endpoint too. The container services still use internal ports.
+Keep `S3_BUCKET` and `OBJECT_STORE_BUCKET` consistent. The shared
 RustFS access/secret keys are a local shortcut and must match the backend keys.
 `APP_ENV` is compared case-insensitively after stripping whitespace, so
 `Local` is local. Any other value rejects the documented dummy passwords and

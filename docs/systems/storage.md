@@ -131,7 +131,8 @@ flowchart LR
 - Image bytes belong in object storage, not in Postgres: [ADR-0001](../decisions/0001-object-storage.md).
 - One database serves relational data and vectors: [ADR-0002](../decisions/0002-postgres-pgvector.md).
 - Each component gets its own login before any catalog tables exist: [ADR-0003](../decisions/0003-database-roles.md).
-- Compose runs data services only; application processes run on the host: [ADR-0004](../decisions/0004-host-processes.md).
+- Compose supports the full local stack and a data-service-only host workflow:
+  [ADR-0004](../decisions/0004-host-processes.md).
 
 ## Future objects and local identities
 

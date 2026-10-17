@@ -1,33 +1,35 @@
-# ADR-0004: Application Processes Run on the Host
+# ADR-0004: Local Host and Container Workflows
 
 Status: Accepted
 
 ## Context
 
-Docker Compose could run the API, the future worker, and the frontend alongside
-PostgreSQL and RustFS. Doing so means a rebuild or a bind-mount dance on every
-code change, while the thing that actually needs containers locally is the
-stateful dependencies that are tedious to install.
+The initial local setup ran only PostgreSQL and RustFS in Compose. The API,
+worker, and frontend ran on the host to keep code changes fast. The planned AWS
+pilot runs application containers, so a local container path is useful before
+deployment.
 
 ## Decision
 
-Compose runs data services only: `postgres`, `rustfs`, and the one-shot
-`rustfs-init`. The FastAPI process, Alembic, pytest, and the Next.js dev server
-run on the host against `127.0.0.1` endpoints. The backend is Python for both
-the API and the future ingestion worker, so there is one runtime to install.
-Containerizing the application is deferred to the AWS milestone.
+Compose supports both workflows. `docker compose up --build -d` builds the
+backend and frontend, starts `postgres` and `rustfs`, runs the one-shot
+`rustfs-init` and `migrate` services, then starts `api` and `frontend`. The same
+backend image runs worker and token CLI commands on demand. The host workflow
+starts only data services in Compose and runs Alembic, FastAPI, the worker, and
+Next.js on the host. Compose uses service DNS names inside containers and binds
+published local ports to `127.0.0.1`.
 
 ## Consequences
 
-+ Code changes take effect without rebuilding an image, and a debugger attaches
-  to a normal local process.
++ The host path keeps hot reload and normal-process debugging; the container
+  path checks application image startup before AWS deployment.
 + `./scripts/check.sh` runs lint and unit tests before touching Docker, so a
   code failure does not wait on container images.
-+ Only two images need to be pulled for a working local stack.
-- Local and production runtimes differ, so container-specific problems surface
-  late.
-- Contributors need Python 3.12 and Node 22 installed, not just Docker. The
-  check script fails early with setup instructions when the virtualenv or
-  `node_modules` is missing.
-- Service URLs differ by context: host processes use `127.0.0.1:9000` while
-  `rustfs-init` uses `rustfs:9000` on the Compose network.
++ Container startup applies migrations before the API and waits for API readiness
+  before starting the frontend.
+- Image rebuilds take time after code changes. The host workflow still needs
+  Python 3.12 and Node 22 and remains the path for `./scripts/check.sh`.
+- Service URLs differ by context: host processes use forwarded `127.0.0.1`
+  ports, while containers use `postgres`, `rustfs`, and `api` DNS names.
+- The local images do not supply AWS credentials, HTTPS, backups, or production
+  authentication; those remain part of the AWS milestone.

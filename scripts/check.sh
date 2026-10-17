@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Acceptance check through M3 catalog browsing. Run from the repository root: ./scripts/check.sh
+# Repository lint, unit and integration checks through M3. Run from the repository root: ./scripts/check.sh
 #
 # Lint and unit tests run first so a code failure does not wait on container
 # images. Everything after that needs the local data services and fails when

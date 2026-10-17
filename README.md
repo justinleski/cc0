@@ -1,15 +1,40 @@
 # cc0
 
-Local-first CC0 visual boards: discover open images and collect them into visual
-boards. M0–M2 and M3 catalog browsing are implemented: Postgres with pgvector,
+Local-first CC0 visual boards: discover verified CC0 images and collect them into visual
+boards. M0–M3 are implemented: Postgres with pgvector,
 RustFS, ingestion with CC0 rights evidence, hybrid search, and a frontend with
-filters, provenance, related images, and visibility-gated media. The backend now supports opt-in local
-authentication and persistent private boards; the frontend board UI remains a
-later slice.
+filters, provenance, related images, and visibility-gated media. Opt-in local
+authentication protects persistent private boards in the API and frontend.
 
 ## Start locally
 
-Requires Docker Compose, Python 3.12+, and Node 22.
+For the complete container stack, Docker Compose is the only prerequisite:
+
+```bash
+docker compose up --build -d
+```
+
+This builds the API and Next.js images, starts PostgreSQL and RustFS, creates the
+local bucket, applies migrations, and starts the API and frontend in that order.
+Open http://127.0.0.1:3000; API readiness is at
+http://127.0.0.1:8000/api/v1/ready. The root `.env` is optional; copy
+`.env.example` to `.env` and edit it to enable local authentication or change
+local settings.
+To run worker or token commands with the same backend image:
+
+```bash
+docker compose run --rm --no-deps api python -m app.worker ingest
+docker compose run --rm --no-deps api python -m app.worker jobs --state dead
+docker compose run --rm --no-deps api python -m app.auth token alice
+```
+
+The fixture ingest intentionally exits 1 after storing 10 eligible assets and
+dead-lettering 3 refused fixtures. Run `docker compose stop` to preserve data.
+
+### Host processes with hot reload
+
+This workflow requires Docker Compose, Python 3.12+, and Node 22. Stop the
+containerized API and frontend before starting host processes on the same ports.
 
 ```bash
 cp -n .env.example .env
@@ -47,7 +72,8 @@ it exits 1. See [ingestion](docs/systems/ingestion.md).
 Open http://127.0.0.1:3000. Run `./scripts/check.sh` for the full acceptance check.
 Use `docker compose stop` to stop services and preserve data.
 
-For board API setup and token commands, see [private boards](docs/systems/boards.md).
+For local board sign-in and token commands, see [private boards](docs/systems/boards.md)
+and the [frontend walkthrough](frontend/README.md).
 
 See the [documentation index](docs/README.md), [local development guide](docs/local-development.md),
 [test commands](docs/lint-test.md), and [MVP spec](docs/mvp-spec.md).
