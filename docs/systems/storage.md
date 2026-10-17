@@ -149,4 +149,5 @@ See [local development](../local-development.md) for roles, grants, and rotation
 
 Revision 0007 adds users, boards and board_items with owner and position
 constraints. API grants and transaction behavior are in [boards.md](boards.md).
+Revision 0008 adds owner-scoped, durable board creation operations.
 The worker has no access to these tables.

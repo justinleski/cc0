@@ -48,13 +48,33 @@ class BoardRepository:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
-    def create(self, owner_id: UUID, name: str, description: str) -> Board:
+    def create(
+        self, owner_id: UUID, name: str, description: str,
+        idempotency_key: str | None, request_hash: bytes | None,
+    ) -> Board:
         with self._engine.begin() as connection:
-            row = connection.execute(
-                text(queries.CREATE),
-                {"owner_id": owner_id, "name": name, "description": description},
-            ).one()
-            return _board(row)
+            params = {"owner_id": owner_id, "name": name, "description": description}
+            if idempotency_key is None:
+                return _board(connection.execute(text(queries.CREATE), params).one())
+            operation = {
+                "owner_id": owner_id,
+                "idempotency_key": idempotency_key,
+                "request_hash": request_hash,
+            }
+            claimed = connection.execute(text(queries.CLAIM_CREATE), operation).one_or_none()
+            if claimed is not None:
+                return _board(connection.execute(
+                    text(queries.CREATE_CLAIMED), {**params, "board_id": claimed.board_id}
+                ).one())
+            previous = connection.execute(text(queries.READ_CREATE), operation).one()
+            if previous.request_hash != request_hash:
+                raise BoardConflict("idempotency key already used with different details")
+            board = connection.execute(
+                text(queries.READ_OWNED), {"owner_id": owner_id, "board_id": previous.board_id}
+            ).one_or_none()
+            if board is None:
+                raise BoardNotFound("board created by this operation was deleted")
+            return _read(connection, {"owner_id": owner_id, "board_id": previous.board_id})
 
     def list(self, owner_id: UUID, limit: int, offset: int) -> list[Board]:
         with self._engine.connect() as connection:

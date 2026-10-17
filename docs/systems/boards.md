@@ -37,16 +37,37 @@ is not implemented in this slice.
 
 ## Database and transactions
 
-Revision 0007 adds `users`, `boards`, and `board_items`. UUID primary keys,
+Revision 0007 adds `users`, `boards`, and `board_items`. Revision 0008 adds
+`board_create_operations` for owner-scoped creation retries. UUID primary keys,
 foreign keys, unique `(board_id, asset_id)`, nonnegative positions, and a
 *deferrable* unique `(board_id, position)` constraint enforce persistent
 invariants. The deferral permits atomic position swaps. There are indexes on
 `boards(owner_user_id, created_at, id)` and `board_items(asset_id)`; the primary
 key serves ordered per-board item reads. Name, description and note length
 checks are also enforced in PostgreSQL. Deleting a board cascades its items.
-The API role can select/insert users and fully manage boards and board items.
-The worker has no access to these tables. No new asset or rights-table grants
-were added.
+The API role can select/insert users, select/insert creation operations, and
+fully manage boards and board items. The worker has no access to these tables.
+No new asset or rights-table grants were added.
+Board creation accepts the original `{name, description?}` body. An optional
+`Idempotency-Key` header (1–128 visible ASCII characters) identifies one
+operation within the authenticated owner. The transaction reserves that key,
+stores a SHA-256 fingerprint of the original name and description and a new
+board UUID, then inserts the board. A concurrent retry waits for that transaction
+and returns the same board. Reusing a key with a different original request
+returns 409. The same key used by another owner creates an independent board.
+Without a key, every request creates a board, including identical names. An
+identical retry after an edit returns the current board with its original ID.
+After deletion, the operation row remains and an identical retry returns 404
+instead of recreating the board. Keys currently have no expiry or pruning.
+The frontend keeps a key in session storage after an uncertain failure, reuses
+it for the same form values, and clears it on success or a definitive
+400/404/409/422 response; a distinct create action uses a new key. The pending
+record also carries a session ID, which survives reload but changes on each
+sign-in. Completion may clear only the matching session and operation key.
+Responses from an earlier sign-in cannot alter the current session's boards,
+authentication, errors, or pending creation key. The operation rows currently
+have indefinite retention; pruning and monitoring remain an M4/M5 operational
+consideration.
 
 The implementation follows router → service → repository → queries. A repository
 mutation begins one transaction, locks `boards` using both board ID and verified
@@ -75,7 +96,7 @@ recommendations.
 
 | Method and path | Result |
 |---|---|
-| `POST /api/v1/boards` | Create from `{name, description?}`; 201 board |
+| `POST /api/v1/boards` | Create from `{name, description?}`; optional `Idempotency-Key` header; 201 board or identical retry, 409 for same-owner key reuse with different payload, 404 if the keyed board was deleted |
 | `GET /api/v1/boards?limit=50&offset=0` | Current user's summaries, newest first |
 | `GET /api/v1/boards/{id}` | Board with visible ordered items |
 | `PATCH /api/v1/boards/{id}` | Edit `name` and/or `description` |
@@ -86,15 +107,18 @@ recommendations.
 | `PUT /api/v1/boards/{id}/items/order` | Set `{asset_ids: [...]}` for visible pins |
 
 Board endpoints and errors send `Cache-Control: no-store`.
+When a board is deleted between list and detail requests, the frontend omits
+that 404 from its loaded list. Authentication and service failures still surface.
 
 ## Frontend workflow (slice 3)
 
 The Next.js app mounts `BoardProvider` in the root layout. `src/api/boards.ts`
 is the typed client integration layer. Its same-origin `/api/boards` route
 forwards authenticated requests to FastAPI with caching disabled. Board lists,
-details and every mutation come from the API; session storage holds only the
-one-hour local bearer token so a reload can restore the session. There are no
-seed boards or session-stored pins. The UI decodes the token subject only to
+details and every mutation come from the API; session storage holds the
+one-hour local bearer token, a session ID, and any pending creation key so a
+reload can restore a safe retry. There are no seed boards or session-stored
+pins. The UI decodes the token subject only to
 select the local account label; FastAPI verifies the signature and owner on
 every request. The backend CLI remains the only token issuer.
 
@@ -143,3 +167,18 @@ simulated failed browser request followed by a real retry. The browser test
 deletes its board afterward. The isolated PostgreSQL board test
 also rejects a genuinely stored but ineligible asset and checks rights
 suppression. The only warning was the existing Starlette/AnyIO deprecation.
+
+M3 remediation validation on 2026-10-17: `./scripts/check.sh` passed backend
+lint, 242 unit tests, frontend typecheck/lint and 25 frontend tests, migration,
+and 50 real-database integration tests. Board tests cover keyed and unkeyed
+creation, owner isolation, edits, deletion, concurrent retries, rollback, and
+retry across API lifespans. Search tests reject a cursor signed with the
+published default database password.
+
+Final F-002 race remediation on 2026-10-17: `./scripts/check.sh` passed backend
+lint, 242 unit tests, frontend typecheck/lint and 29 frontend tests, migration,
+and 50 real-database integration tests. Deferred frontend tests cover an old
+409 arriving while a new account has a pending create, an uncertain failure and
+retry with the same key, stale success after an account switch, and stale
+success and 401 responses after signing back into the same account. A remount
+test verifies the same session retains its pending key after an uncertain failure.

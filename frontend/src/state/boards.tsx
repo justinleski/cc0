@@ -4,7 +4,10 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import * as api from "@/api/boards";
 
 const TOKEN_KEY = "cc0-local-token";
+const SESSION_KEY = "cc0-board-session";
+const CREATE_KEY = "cc0-pending-board-create";
 type Account = "alice" | "bob";
+type PendingCreate = { session: string; key: string; name: string; description: string };
 type BoardContextValue = {
   account: Account | null;
   boards: api.BoardDetail[];
@@ -38,6 +41,7 @@ export function BoardProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [busyBoardIds, setBusyBoardIds] = useState<string[]>([]);
   const tokenRef = useRef("");
+  const sessionRef = useRef("");
   const generation = useRef(0);
   const readVersion = useRef(0);
   const pending = useRef(new Set<string>());
@@ -46,7 +50,10 @@ export function BoardProvider({ children }: { children: ReactNode }) {
     generation.current++;
     readVersion.current++;
     tokenRef.current = "";
+    sessionRef.current = "";
     sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(CREATE_KEY);
     pending.current.clear();
     setBusyBoardIds([]);
     setBoards([]);
@@ -56,8 +63,16 @@ export function BoardProvider({ children }: { children: ReactNode }) {
   }
   async function fetchBoards(token: string, current: number, read: number) {
     const summaries = await api.listBoards(token);
-    const details = await Promise.all(summaries.map((board) => api.getBoard(token, board.id)));
-    if (generation.current === current && readVersion.current === read) setBoards(details);
+    const details = await Promise.all(summaries.map(async (board) => {
+      try { return await api.getBoard(token, board.id); }
+      catch (cause) {
+        if (cause instanceof api.BoardApiError && cause.status === 404) return null;
+        throw cause;
+      }
+    }));
+    if (generation.current === current && readVersion.current === read) {
+      setBoards(details.filter((board): board is api.BoardDetail => board !== null));
+    }
   }
   async function load(token: string) {
     const current = generation.current;
@@ -77,10 +92,14 @@ export function BoardProvider({ children }: { children: ReactNode }) {
     const savedAccount = saved ? tokenAccount(saved) : null;
     if (saved && savedAccount) {
       tokenRef.current = saved;
+      sessionRef.current = sessionStorage.getItem(SESSION_KEY) || crypto.randomUUID();
+      sessionStorage.setItem(SESSION_KEY, sessionRef.current);
       setAccount(savedAccount);
       void load(saved);
     } else {
       sessionStorage.removeItem(TOKEN_KEY);
+      sessionStorage.removeItem(SESSION_KEY);
+      sessionStorage.removeItem(CREATE_KEY);
       setLoading(false);
     }
     // Initial session restoration runs once for this provider lifetime.
@@ -100,7 +119,9 @@ export function BoardProvider({ children }: { children: ReactNode }) {
       await fetchBoards(clean, current, read);
       if (generation.current !== current) return false;
       tokenRef.current = clean;
+      sessionRef.current = crypto.randomUUID();
       sessionStorage.setItem(TOKEN_KEY, clean);
+      sessionStorage.setItem(SESSION_KEY, sessionRef.current);
       setAccount(selected);
       return true;
     } catch (cause) {
@@ -108,7 +129,7 @@ export function BoardProvider({ children }: { children: ReactNode }) {
       return false;
     } finally { if (generation.current === current) setLoading(false); }
   }
-  async function mutate(id: string, action: (token: string) => Promise<api.BoardDetail | void>): Promise<{ ok: boolean; board?: api.BoardDetail }> {
+  async function mutate(id: string, action: (token: string) => Promise<api.BoardDetail | void>): Promise<{ ok: boolean; board?: api.BoardDetail; status?: number }> {
     if (!tokenRef.current || pending.current.has(id)) return { ok: false };
     pending.current.add(id); setBusyBoardIds([...pending.current]); setError(null);
     ++readVersion.current;
@@ -133,7 +154,7 @@ export function BoardProvider({ children }: { children: ReactNode }) {
           }
         }
       }
-      return { ok: false };
+      return { ok: false, status: cause instanceof api.BoardApiError ? cause.status : undefined };
     } finally {
       if (generation.current === current) { pending.current.delete(id); setBusyBoardIds([...pending.current]); setLoading(false); }
     }
@@ -141,7 +162,25 @@ export function BoardProvider({ children }: { children: ReactNode }) {
   return <BoardContext.Provider value={{
     account, boards, loading, error, busyBoardIds, signIn, signOut: reset,
     refresh: async () => { if (tokenRef.current) await load(tokenRef.current); },
-    create: async (name, description) => (await mutate("new", (token) => api.createBoard(token, name, description))).board || null,
+    create: async (name, description) => {
+      if (!tokenRef.current || pending.current.has("new")) return null;
+      const session = sessionRef.current;
+      let pendingCreate: PendingCreate | null = null;
+      try { pendingCreate = JSON.parse(sessionStorage.getItem(CREATE_KEY) || "null"); } catch { /* Replace malformed local state. */ }
+      if (!pendingCreate || pendingCreate.session !== session || typeof pendingCreate.key !== "string" || pendingCreate.name !== name || pendingCreate.description !== description) {
+        pendingCreate = { session, key: crypto.randomUUID(), name, description };
+        sessionStorage.setItem(CREATE_KEY, JSON.stringify(pendingCreate));
+      }
+      const result = await mutate("new", (token) => api.createBoard(token, pendingCreate.key, name, description));
+      if (result.ok || [400, 404, 409, 422].includes(result.status || 0)) {
+        let stored: PendingCreate | null = null;
+        try { stored = JSON.parse(sessionStorage.getItem(CREATE_KEY) || "null"); } catch { /* Leave unrelated state alone. */ }
+        if (sessionRef.current === session && stored?.session === session && stored.key === pendingCreate.key) {
+          sessionStorage.removeItem(CREATE_KEY);
+        }
+      }
+      return result.board || null;
+    },
     edit: async (id, name, description) => (await mutate(id, (token) => api.editBoard(token, id, name, description))).ok,
     remove: async (id) => (await mutate(id, (token) => api.deleteBoard(token, id))).ok,
     toggleSave: async (id, assetId) => {

@@ -8,6 +8,7 @@ async function forward(request: Request, context: { params: Promise<{ path?: str
       method: request.method,
       headers: {
         ...(request.headers.get("authorization") ? { Authorization: request.headers.get("authorization")! } : {}),
+        ...(request.headers.get("idempotency-key") ? { "Idempotency-Key": request.headers.get("idempotency-key")! } : {}),
         ...(request.method !== "GET" && request.method !== "DELETE" ? { "Content-Type": "application/json" } : {}),
       },
       body: request.method === "GET" || request.method === "DELETE" ? undefined : await request.text(),

@@ -1,3 +1,5 @@
+import hashlib
+import json
 from unittest.mock import Mock
 from uuid import uuid4
 
@@ -12,8 +14,14 @@ def test_service_normalizes_names_preserves_notes_and_passes_verified_owner():
     repository = Mock()
     service = BoardService(repository)
     owner, board, asset = uuid4(), uuid4(), uuid4()
-    service.create(owner, "  Landscape  ", "notes")
-    repository.create.assert_called_once_with(owner, "Landscape", "notes")
+    service.create(owner, "  Landscape  ", "notes", "operation-1")
+    fingerprint = hashlib.sha256(json.dumps(
+        {"name": "  Landscape  ", "description": "notes"},
+        separators=(",", ":"), ensure_ascii=False,
+    ).encode()).digest()
+    repository.create.assert_called_once_with(
+        owner, "Landscape", "notes", "operation-1", fingerprint
+    )
     service.notes(owner, board, asset, "  meaningful spacing\n")
     repository.change_item.assert_called_once_with(
         owner, board, asset, "notes", "  meaningful spacing\n"
@@ -43,6 +51,19 @@ def test_invalid_reorder_and_notes_never_write():
     assert repository.mock_calls == []
 
 
+def test_create_without_key_keeps_original_contract_and_rejects_invalid_keys():
+    repository = Mock()
+    service = BoardService(repository)
+    owner = uuid4()
+    service.create(owner, "  Board  ", "")
+    repository.create.assert_called_once_with(owner, "Board", "", None, None)
+    repository.reset_mock()
+    for key in ("", "space key", "x" * 129, "é"):
+        with pytest.raises(InvalidBoardChange, match="Idempotency-Key"):
+            service.create(owner, "Board", "", key)
+    repository.create.assert_not_called()
+
+
 def test_board_sql_binds_owner_and_eligibility_is_the_public_view():
     for name in [
         "OWNED",
@@ -50,6 +71,9 @@ def test_board_sql_binds_owner_and_eligibility_is_the_public_view():
         "READ_OWNED",
         "LIST",
         "CREATE",
+        "CLAIM_CREATE",
+        "READ_CREATE",
+        "CREATE_CLAIMED",
         "EDIT",
         "DELETE",
         "TOUCH",

@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.auth.dependencies import current_user
@@ -91,8 +91,13 @@ Service = Annotated[BoardService, Depends(service)]
 
 
 @router.post("", response_model=BoardResponse, status_code=201)
-def create_board(body: CreateBoard, user: User, boards: Service) -> Board:
-    return boards.create(user.id, body.name, body.description)
+def create_board(
+    body: CreateBoard,
+    user: User,
+    boards: Service,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Board:
+    return boards.create(user.id, body.name, body.description, idempotency_key)
 
 
 @router.get("", response_model=BoardList)

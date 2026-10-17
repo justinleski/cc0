@@ -13,12 +13,13 @@ export class BoardApiError extends Error {
   }
 }
 
-async function request<T>(token: string, path: string, method = "GET", body?: object): Promise<T> {
+async function request<T>(token: string, path: string, method = "GET", body?: object, idempotencyKey?: string): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`/api/boards${path}`, {
       method,
-      headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+      headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}),
+        ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}) },
       body: body ? JSON.stringify(body) : undefined,
       cache: "no-store",
       signal: AbortSignal.timeout(30000),
@@ -42,7 +43,7 @@ export async function listBoards(token: string): Promise<BoardSummary[]> {
   }
 }
 export const getBoard = (token: string, id: string) => request<BoardDetail>(token, `/${encodeURIComponent(id)}`);
-export const createBoard = (token: string, name: string, description: string) => request<BoardDetail>(token, "", "POST", { name, description });
+export const createBoard = (token: string, key: string, name: string, description: string) => request<BoardDetail>(token, "", "POST", { name, description }, key);
 export const editBoard = (token: string, id: string, name: string, description: string) => request<BoardDetail>(token, `/${encodeURIComponent(id)}`, "PATCH", { name, description });
 export const deleteBoard = (token: string, id: string) => request<void>(token, `/${encodeURIComponent(id)}`, "DELETE");
 export const addPin = (token: string, id: string, assetId: string) => request<BoardDetail>(token, `/${encodeURIComponent(id)}/items`, "POST", { asset_id: assetId });

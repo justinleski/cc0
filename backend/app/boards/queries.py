@@ -11,6 +11,19 @@ CREATE = """
 INSERT INTO boards (owner_user_id, name, description)
 VALUES (:owner_id, :name, :description) RETURNING *
 """
+CLAIM_CREATE = """
+INSERT INTO board_create_operations (owner_user_id, idempotency_key, request_hash, board_id)
+VALUES (:owner_id, :idempotency_key, :request_hash, gen_random_uuid())
+ON CONFLICT (owner_user_id, idempotency_key) DO NOTHING RETURNING board_id
+"""
+READ_CREATE = """
+SELECT board_id, request_hash FROM board_create_operations
+WHERE owner_user_id = :owner_id AND idempotency_key = :idempotency_key
+"""
+CREATE_CLAIMED = """
+INSERT INTO boards (id, owner_user_id, name, description)
+VALUES (:board_id, :owner_id, :name, :description) RETURNING *
+"""
 EDIT = """
 UPDATE boards SET name = COALESCE(:name, name), description = COALESCE(:description, description),
                   updated_at = clock_timestamp()

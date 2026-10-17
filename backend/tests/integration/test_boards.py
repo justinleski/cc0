@@ -7,9 +7,12 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from sqlalchemy.exc import IntegrityError
 
 from app.auth.local import identity, issue_token
+from app.boards.models import BoardConflict
 from app.boards.repository import BoardRepository
+from app.boards.service import BoardService
 from app.core.config import Settings
 from app.db import catalog
 from app.main import create_app
@@ -32,7 +35,7 @@ def empty_private_tables(ready_catalog: ReadyCatalog) -> None:
     # The imported catalog fixture clears catalog tables; private tables need
     # their own reset because this module reuses one migrated throwaway DB.
     with psycopg.connect(ready_catalog.database.migration_url) as connection:
-        connection.execute("TRUNCATE board_items, boards, users CASCADE")
+        connection.execute("TRUNCATE board_create_operations, board_items, boards, users CASCADE")
 
 
 def _settings(ready: ReadyCatalog) -> Settings:
@@ -49,6 +52,112 @@ def _public_ids(client: TestClient) -> list[str]:
     return [item["id"] for item in client.get("/api/v1/assets").json()["items"]]
 
 
+def test_create_key_retries_survive_edits_and_deletes_without_cross_owner_leaks(
+    ready_catalog: ReadyCatalog,
+) -> None:
+    settings = _settings(ready_catalog)
+    with TestClient(create_app(settings)) as client:
+        alice, bob = _headers(settings, "alice"), _headers(settings, "bob")
+        key = str(uuid4())
+        alice["Idempotency-Key"] = key
+        bob["Idempotency-Key"] = key
+        payload = {"name": "Same name", "description": "first"}
+        first = client.post("/api/v1/boards", headers=alice, json=payload)
+        assert first.status_code == 201, first.text
+        board_id = first.json()["id"]
+        again = client.post("/api/v1/boards", headers=alice, json=payload)
+        assert again.status_code == 201, again.text
+        assert again.json() == first.json()
+        assert (
+            client.post(
+                "/api/v1/boards", headers=alice, json={**payload, "description": "changed"}
+            ).status_code
+            == 409
+        )
+        changed = client.patch(
+            f"/api/v1/boards/{board_id}", headers=alice, json={"name": "Edited"}
+        )
+        assert changed.status_code == 200
+        edited_retry = client.post("/api/v1/boards", headers=alice, json=payload)
+        assert edited_retry.status_code == 201
+        assert edited_retry.json()["id"] == board_id
+        assert edited_retry.json()["name"] == "Edited"
+
+        other_owner = client.post("/api/v1/boards", headers=bob, json=payload)
+        assert other_owner.status_code == 201
+        assert other_owner.json()["id"] != board_id
+        assert client.get(f"/api/v1/boards/{board_id}", headers=bob).status_code == 404
+        # The defective API accepted client board IDs and returned 409 for a
+        # known foreign ID but 201 for an unused ID. Both are invalid bodies now.
+        known_id = client.post(
+            "/api/v1/boards", headers=bob, json={**payload, "id": board_id}
+        )
+        unknown_id = client.post(
+            "/api/v1/boards", headers=bob, json={**payload, "id": str(uuid4())}
+        )
+        assert known_id.status_code == unknown_id.status_code == 422
+
+        alice["Idempotency-Key"] = str(uuid4())
+        distinct = client.post("/api/v1/boards", headers=alice, json=payload)
+        assert distinct.status_code == 201
+        assert distinct.json()["id"] != board_id
+        alice.pop("Idempotency-Key")
+        unkeyed = client.post("/api/v1/boards", headers=alice, json=payload)
+        assert unkeyed.status_code == 201
+        assert unkeyed.json()["id"] not in {board_id, distinct.json()["id"]}
+        listed = client.get("/api/v1/boards", headers=alice).json()["items"]
+        assert {item["id"] for item in listed} == {
+            board_id, distinct.json()["id"], unkeyed.json()["id"]
+        }
+
+        alice["Idempotency-Key"] = key
+        assert client.delete(f"/api/v1/boards/{board_id}", headers=alice).status_code == 204
+        deleted_retry = client.post("/api/v1/boards", headers=alice, json=payload)
+        assert deleted_retry.status_code == 404
+        assert client.get(f"/api/v1/boards/{board_id}", headers=alice).status_code == 404
+        assert client.post(
+            "/api/v1/boards", headers=alice, json={**payload, "name": "Changed"}
+        ).status_code == 409
+
+
+def test_concurrent_create_retries_use_one_board(ready_catalog: ReadyCatalog) -> None:
+    settings = _settings(ready_catalog)
+    with TestClient(create_app(settings)) as client:
+        owner = identity("alice").id
+        headers = _headers(settings, "alice")
+        assert client.get("/api/v1/boards", headers=headers).status_code == 200
+        key = str(uuid4())
+        service = BoardService(BoardRepository(client.app.state.db_engine))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            created = list(pool.map(
+                lambda _: service.create(owner, "Concurrent retry", "", key), range(2)
+            ))
+        assert created[0] == created[1]
+        assert len(client.get("/api/v1/boards", headers=headers).json()["items"]) == 1
+
+        conflicting_key = str(uuid4())
+
+        def create_conflicting(name: str) -> UUID | str:
+            try:
+                return service.create(owner, name, "", conflicting_key).id
+            except BoardConflict:
+                return "conflict"
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(create_conflicting, ("First", "Second")))
+        assert outcomes.count("conflict") == 1
+        assert len([item for item in outcomes if isinstance(item, UUID)]) == 1
+        assert len(client.get("/api/v1/boards", headers=headers).json()["items"]) == 2
+
+        # A failed board insert must roll back its operation reservation too.
+        rollback_key = str(uuid4())
+        repository = BoardRepository(client.app.state.db_engine)
+        with pytest.raises(IntegrityError):
+            repository.create(owner, " ", "", rollback_key, b"x" * 32)
+        recovered = service.create(owner, "Valid", "", rollback_key)
+        assert recovered.name == "Valid"
+
+
 def test_board_crud_owner_isolation_and_inputs(ready_catalog: ReadyCatalog) -> None:
     settings = _settings(ready_catalog)
     with TestClient(create_app(settings)) as client:
@@ -56,7 +165,9 @@ def test_board_crud_owner_isolation_and_inputs(ready_catalog: ReadyCatalog) -> N
         unauthenticated = client.post("/api/v1/boards", json={"name": "Private"})
         assert unauthenticated.status_code == 401
         created = client.post(
-            "/api/v1/boards", headers=alice, json={"name": "  Private  ", "description": "first"}
+            "/api/v1/boards",
+            headers=alice,
+            json={"name": "  Private  ", "description": "first"},
         )
         assert created.status_code == 201, created.text
         board = created.json()
@@ -116,7 +227,9 @@ def test_pin_eligibility_notes_reorder_and_suppression(ready_catalog: ReadyCatal
     with TestClient(create_app(settings)) as client:
         alice = _headers(settings, "alice")
         assets = _public_ids(client)
-        created = client.post("/api/v1/boards", headers=alice, json={"name": "Selected"}).json()
+        created = client.post(
+            "/api/v1/boards", headers=alice, json={"name": "Selected"}
+        ).json()
         path = f"/api/v1/boards/{created['id']}"
         for position, asset_id in enumerate(assets):
             response = client.post(
@@ -222,9 +335,9 @@ def test_concurrent_board_modifications_serialize_and_rollback(ready_catalog: Re
     with TestClient(create_app(settings)) as client:
         alice = _headers(settings, "alice")
         assets = _public_ids(client)
-        board_id = client.post("/api/v1/boards", headers=alice, json={"name": "Concurrent"}).json()[
-            "id"
-        ]
+        board_id = client.post(
+            "/api/v1/boards", headers=alice, json={"name": "Concurrent"}
+        ).json()["id"]
         path = f"/api/v1/boards/{board_id}"
 
         def add(asset_id):
@@ -265,9 +378,9 @@ def test_duplicate_concurrent_pin_and_failed_write_rollback(ready_catalog: Ready
     with TestClient(create_app(settings)) as client:
         alice = _headers(settings, "alice")
         assets = _public_ids(client)
-        board_id = client.post("/api/v1/boards", headers=alice, json={"name": "Atomic"}).json()[
-            "id"
-        ]
+        board_id = client.post(
+            "/api/v1/boards", headers=alice, json={"name": "Atomic"}
+        ).json()["id"]
         path = f"/api/v1/boards/{board_id}"
 
         def add_same(_index):
@@ -302,15 +415,20 @@ def test_duplicate_concurrent_pin_and_failed_write_rollback(ready_catalog: Ready
 def test_board_persists_across_api_lifespans(ready_catalog: ReadyCatalog) -> None:
     settings = _settings(ready_catalog)
     alice = _headers(settings, "alice")
+    alice["Idempotency-Key"] = str(uuid4())
+    payload = {"name": "Persisted", "description": "survives restart"}
     with TestClient(create_app(settings)) as client:
         response = client.post(
             "/api/v1/boards",
             headers=alice,
-            json={"name": "Persisted", "description": "survives restart"},
+            json=payload,
         )
         assert response.status_code == 201
         board_id = response.json()["id"]
     with TestClient(create_app(settings)) as restarted:
+        retry = restarted.post("/api/v1/boards", headers=alice, json=payload)
+        assert retry.status_code == 201
+        assert retry.json()["id"] == board_id
         saved = restarted.get(f"/api/v1/boards/{board_id}", headers=alice)
         assert saved.status_code == 200
         assert saved.json()["description"] == "survives restart"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from uuid import UUID
 
 from app.boards.models import Board, InvalidBoardChange
@@ -25,8 +27,25 @@ class BoardService:
     def __init__(self, repository: BoardRepository) -> None:
         self._repository = repository
 
-    def create(self, owner_id: UUID, name: str, description: str) -> Board:
-        return self._repository.create(owner_id, _name(name), _text(description))
+    def create(
+        self, owner_id: UUID, name: str, description: str, idempotency_key: str | None = None
+    ) -> Board:
+        if idempotency_key is not None and (
+            not 1 <= len(idempotency_key) <= 128
+            or any(not 33 <= ord(char) <= 126 for char in idempotency_key)
+        ):
+            raise InvalidBoardChange("Idempotency-Key must contain 1–128 visible ASCII characters")
+        fingerprint = None
+        if idempotency_key is not None:
+            original = json.dumps(
+                {"name": name, "description": description},
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode()
+            fingerprint = hashlib.sha256(original).digest()
+        return self._repository.create(
+            owner_id, _name(name), _text(description), idempotency_key, fingerprint
+        )
 
     def list(self, owner_id: UUID, limit: int, offset: int) -> list[Board]:
         return self._repository.list(owner_id, limit, offset)
