@@ -479,7 +479,9 @@ def test_a_crash_after_the_object_write_resumes_without_a_second_download(
     monkeypatch.setattr(harness.repository, "store_asset", crash_once)
     harness.worker.service.enqueue(["100003"])
 
-    first = harness.worker.drain()
+    # Limit this call to the first attempt. With a 10 ms test backoff, an
+    # unrestricted drain can claim the retry before it returns on a busy host.
+    first = harness.worker.drain(max_jobs=1)
     assert [outcome.result for outcome in first] == [catalog.JOB_RETRY_WAIT]
     assert len(harness.objects.puts) == 2
     assert harness.scalar("SELECT count(*) FROM assets") == 0
