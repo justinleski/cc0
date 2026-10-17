@@ -1,6 +1,6 @@
 # API process
 
-Status: Implemented (health, readiness, and catalog search)
+Status: Implemented (health, readiness, catalog search, private boards)
 Owner: [backend/app/](../../backend/app/main.py)
 Depends on: PostgreSQL, RustFS
 Related: [storage.md](storage.md), [search.md](search.md), [ADR-0003](../decisions/0003-database-roles.md), [ADR-0004](../decisions/0004-host-processes.md)
@@ -10,7 +10,7 @@ Related: [storage.md](storage.md), [search.md](search.md), [ADR-0003](../decisio
 A FastAPI application under `/api/v1`: liveness, readiness, and the public
 catalog. Search, asset detail, and related images read `ready_assets` (READY,
 and the latest evidence row is verified CC0). Creator lookup reads `creators`.
-Board routes are not built. Middleware attaches a request id to
+Board routes and local auth are documented in [boards.md](boards.md). Middleware attaches a request id to
 every response and logs one line per request. Query strings are not logged.
 
 ## Architecture
@@ -137,3 +137,11 @@ flowchart TB
   privileges are wrong: [ADR-0003](../decisions/0003-database-roles.md).
 - The object store is reached through the S3 API so the same code path works
   against RustFS locally and S3 later: [ADR-0001](../decisions/0001-object-storage.md).
+
+## M3 catalog media
+
+The real [catalog frontend](catalog-frontend.md) consumes these contracts. Cards
+include image dimensions. `GET /api/v1/assets/{id}/image/{thumbnail|original}`
+reads private object bytes only after a public-view check, rechecks visibility
+after retrieval, returns 404 for hidden/missing images and 503 for storage failures.
+All catalog responses disable caching. Schema and grants are unchanged.

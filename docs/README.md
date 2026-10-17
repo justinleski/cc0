@@ -1,10 +1,10 @@
 # CC0 Knowledge Index
 
 What is written down about this repository, and where. Milestones M0 through M2
-have shipped: local infrastructure, a health-check API, an ingestion worker
+and the first two M3 slices have shipped: local infrastructure, a health-check API, an ingestion worker
 that stores explicitly CC0 Met fixtures with rights evidence, and hybrid search
-over those assets once an embedding job marks them `READY`. Boards are not
-built yet. The default embedding provider is a deterministic fake; a real
+over those assets once an embedding job marks them `READY`. M3 slice 1 connects the frontend to this catalog. M3 slice 2 adds backend
+local authentication and private boards; the board frontend is not connected yet. The default embedding provider is a deterministic fake; a real
 OpenCLIP checkpoint is optional and still unpinned.
 
 M0 acceptance: Compose services, migrations, `/api/v1/health` and
@@ -24,13 +24,17 @@ evolve.
 - [Evaluation](evaluation.md) — not implemented; spec pointers.
 - [AWS deployment](aws-deployment.md) — not implemented; pilot spec pointers.
 - [M2 engineering handoff](m2-handoff.md) — pooling, catalog grants, and the
-  embedding grants are implemented. Grants for users, boards, and exports are
-  still required when those tables are created.
+  embedding grants are implemented. Users and boards grants are implemented; exports remain future work.
 - [Lint and tests](lint-test.md)
   The individual commands behind `./scripts/check.sh`.
 
 ## Systems
 
+- [Catalog frontend](systems/catalog-frontend.md)
+  M3 slice 1: real browse/search, provenance, related images, and gated media.
+
+- [Private boards and local authentication](systems/boards.md)
+  M3 slice 2: signed local tokens, owner-scoped board API and transactions.
 - [Storage](systems/storage.md)
   Postgres with pgvector, RustFS, migrations, database roles and catalog grants.
 - [API process](systems/api.md)
@@ -53,6 +57,6 @@ evolve.
 
 ## Not documented yet
 
-Boards and exports are milestones M3 and M4 in the [spec](mvp-spec.md). Each
-gets a page under `systems/` when its code exists. The frontend browses a mock
-catalog in the meantime; see [frontend/README.md](../frontend/README.md).
+Exports remain future work in the [spec](mvp-spec.md). The frontend browses
+the real backend catalog; its board UI is not connected yet. See
+[frontend/README.md](../frontend/README.md).

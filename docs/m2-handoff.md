@@ -2,8 +2,8 @@
 
 Status: Pooling, the environment rule, the M1 catalog grants, and the
 `asset_embeddings` grants are implemented. `asset_relations` is not created.
-Grants for `users`, `boards`, `board_items`, and `exports` are still required
-when those tables are created.
+M3 slice 2 grants for `users`, `boards` and `board_items` are now implemented
+in revision 0007. `exports` remains future work.
 
 For what is running, see [storage](systems/storage.md),
 [ingestion](systems/ingestion.md), and [search](systems/search.md).

@@ -38,6 +38,7 @@ checks. If the comparison base is unavailable, CI runs everything. Locally,
 ```bash
 backend/.venv/bin/ruff check backend
 backend/.venv/bin/pytest backend/tests/unit
+(cd frontend && npm test)
 (cd frontend && npm run typecheck)
 (cd frontend && npm run lint)
 (cd frontend && npm run build)
@@ -93,8 +94,10 @@ existing vectors against PostgreSQL.
 and checks that a related image/text pair outranks an unrelated one. It compares
 order, not bit-exact floats. The check script does not run it.
 
-The frontend is still the mock browse UI with no API calls, so it has a type
-check and a lint but no test suite. Component tests wait until interaction-heavy UI.
+The frontend runs Vitest API/component tests in `scripts/check.sh`. They cover
+query forwarding, filters, pagination/order, detail/provenance, related images,
+loading/empty/error states and image retrieval failures. The optional real-backend
+Playwright check and its setup are documented in [frontend/README.md](../frontend/README.md).
 
 ## Checks that need the local data services
 
@@ -111,7 +114,7 @@ run means the stack really answered. They are the acceptance check through M2:
 - `test_migration.py` migrates a throwaway database, then asserts the `vector`
   and `pg_trgm` extensions, the three login roles, that `cc0_api` and
   `cc0_worker` cannot create tables, that `cc0_migrator` can, that the catalog
-  and `asset_embeddings` exist and boards do not, that a new table grants
+  and `asset_embeddings`, users and boards exist, that a new table grants
   nothing to API or worker by default, the per-table grants including
   insert-only embeddings and `SELECT` on `ready_assets`, that existing
   passwords survive reapplication, that the downgrade reverses it, and that
@@ -158,3 +161,7 @@ Stop the services without deleting data:
 ```bash
 docker compose stop
 ```
+
+M3 board tests (`test_auth.py`, `test_boards.py` in unit and integration) cover
+local token verification and environment guards, board CRUD and isolation,
+pinning and suppression, concurrency, rollback, and migration grants.

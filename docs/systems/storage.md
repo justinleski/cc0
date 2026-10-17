@@ -18,7 +18,8 @@ with per-table grants. Revision 0006 adds `asset_embeddings` (worker
 `SELECT, INSERT` only), search lexemes on `assets`, `pg_trgm`, and the
 `ready_assets` view. The view keeps a READY asset whose latest evidence row
 (`checked_at DESC, id DESC`) is verified CC0. What the ingest rows mean is in [ingestion](ingestion.md).
-Search is in [search](search.md). Boards, exports, and users do not exist yet.
+Search is in [search](search.md). Users and boards are documented in
+[boards](boards.md); exports do not exist yet.
 
 ## Architecture
 
@@ -142,3 +143,9 @@ and add assertions to the migration test.
 Shared RustFS keys are a development shortcut; production needs separate API,
 worker, and bucket-init identities as described in [ADR-0001](../decisions/0001-object-storage.md).
 See [local development](../local-development.md) for roles, grants, and rotation.
+
+## M3 private board storage
+
+Revision 0007 adds users, boards and board_items with owner and position
+constraints. API grants and transaction behavior are in [boards.md](boards.md).
+The worker has no access to these tables.

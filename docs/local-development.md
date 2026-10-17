@@ -81,3 +81,8 @@ Changing `.env` alone does not rotate an existing cluster. Local rotation is a
 new volume (which deletes local data), a manual `ALTER ROLE ... PASSWORD ...`,
 or downgrade to base plus upgrade. Production rotation is an operations task,
 not a migration.
+
+## Local board API authentication
+
+See [private boards](systems/boards.md) for the opt-in auth mode, token CLI,
+owner isolation and board routes. The default is `AUTH_MODE=disabled`.

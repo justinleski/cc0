@@ -266,3 +266,11 @@ normalized string, is the first cache if repeated queries show text encode in
 search latency. Redis stays the later step for more than one API process.
 A ranked page is the snapshot stored in its cursor. Search quality benchmarks
 stay in milestone M4.
+
+## M3 catalog media
+
+The real [catalog frontend](catalog-frontend.md) consumes these contracts. Cards
+include image dimensions. `GET /api/v1/assets/{id}/image/{thumbnail|original}`
+reads private object bytes only after a public-view check, rechecks visibility
+after retrieval, returns 404 for hidden/missing images and 503 for storage failures.
+All catalog responses disable caching. Schema and grants are unchanged.
