@@ -155,4 +155,6 @@ def _card(row: Any) -> AssetCard:
         created_year_end=row.created_year_end,
         thumbnail_key=row.thumbnail_key,
         ingested_at=row.ingested_at,
+        width=row.width,
+        height=row.height,
     )

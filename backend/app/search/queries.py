@@ -14,7 +14,7 @@ from app.search.rank import CANDIDATE_POOL
 _CARD_COLUMNS = """
 assets.id, assets.title, assets.creator_id, assets.creator_name,
 assets.location_label, assets.created_year_start, assets.created_year_end,
-assets.thumbnail_key, assets.ingested_at
+assets.thumbnail_key, assets.ingested_at, assets.width, assets.height
 """
 
 _PUBLIC_FROM = f"FROM {catalog.READY_ASSETS_VIEW} AS assets"

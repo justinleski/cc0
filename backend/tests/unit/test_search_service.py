@@ -29,6 +29,8 @@ def card(number: int) -> AssetCard:
         created_year_end=None,
         thumbnail_key=f"{number}.webp",
         ingested_at=datetime(2026, 1, 1, tzinfo=UTC),
+        width=640,
+        height=480,
     )
 
 

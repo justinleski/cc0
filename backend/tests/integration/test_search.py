@@ -296,6 +296,8 @@ def test_a_stored_asset_is_not_public_until_embed_commits(ready_catalog: ReadyCa
     with TestClient(create_app(ready_catalog.settings)) as client:
         assert client.get(f"/api/v1/assets/{asset_id}").status_code == 404
         assert client.get("/api/v1/assets").json()["items"] == []
+        for variant in ["thumbnail", "original"]:
+            assert client.get(f"/api/v1/assets/{asset_id}/image/{variant}").status_code == 404
     ready_catalog.embed.drain()
     with TestClient(create_app(ready_catalog.settings)) as client:
         assert client.get(f"/api/v1/assets/{asset_id}").status_code == 200
@@ -560,3 +562,45 @@ def test_ranked_pages_stay_on_the_snapshot_after_suppression(
             params={"q": query, "limit": 1, "cursor": encode_cursor(payload)},
         )
         assert forged.status_code == 400
+
+
+def test_image_routes_read_private_objects_and_recheck_rights(ready_catalog: ReadyCatalog):
+    _publish(ready_catalog, [HARBOR, FIELD])
+    objects = ObjectStore(ready_catalog._s3, ready_catalog.settings.object_store_bucket)
+    with TestClient(create_app(ready_catalog.settings)) as client:
+        items = client.get("/api/v1/assets").json()["items"]
+        asset_id = items[0]["id"]
+        detail = client.get(f"/api/v1/assets/{asset_id}").json()
+        for variant, key in [("thumbnail", detail["thumbnail_key"]),
+                             ("original", detail["original_key"])]:
+            response = client.get(f"/api/v1/assets/{asset_id}/image/{variant}")
+            assert response.status_code == 200
+            assert response.content == objects.get_bytes(key)
+            assert response.headers["content-type"].startswith("image/")
+            assert response.headers["cache-control"] == "no-store"
+            assert response.headers["x-content-type-options"] == "nosniff"
+        _reject(ready_catalog, asset_id)
+        for variant in ["thumbnail", "original"]:
+            response = client.get(f"/api/v1/assets/{asset_id}/image/{variant}")
+            assert response.status_code == 404
+            assert response.headers["cache-control"] == "no-store"
+        # Object bytes remain private even while retained for operator inspection.
+        assert objects.get_bytes(detail["original_key"])
+
+
+def test_browse_pages_follow_database_order_without_duplicates(ready_catalog: ReadyCatalog):
+    _publish(ready_catalog, [HARBOR, FIELD, REEDS])
+    with TestClient(create_app(ready_catalog.settings)) as client:
+        all_items = client.get("/api/v1/assets").json()["items"]
+        expected = sorted(all_items, key=lambda a: (a["ingested_at"], a["id"]), reverse=True)
+        assert all_items == expected
+        seen = []
+        params = {"limit": 1}
+        while True:
+            page = client.get("/api/v1/assets", params=params).json()
+            seen.extend(page["items"])
+            if page["next_cursor"] is None:
+                break
+            params["cursor"] = page["next_cursor"]
+        assert seen == expected
+        assert len({item["id"] for item in seen}) == 3

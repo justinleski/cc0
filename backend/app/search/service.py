@@ -4,9 +4,11 @@ Persistence lives behind SearchRepository. Text is encoded before repository
 candidate retrieval so inference never holds a pooled database connection.
 """
 
+from typing import Literal
 from uuid import UUID
 
 from app.embeddings.provider import EmbeddingProvider
+from app.integrations.object_store import ObjectStore
 from app.search.cursor import (
     RankSnapshot,
     browse_cursor,
@@ -18,6 +20,7 @@ from app.search.cursor import (
 )
 from app.search.models import (
     AssetDetail,
+    AssetImage,
     CreatorPage,
     RelatedHit,
     SearchFilters,
@@ -30,6 +33,33 @@ from app.search.repository import SearchRepository
 
 class SearchQueryError(Exception):
     """The request cannot be searched. The message is safe to return."""
+
+
+class AssetMediaService:
+    """Resolve private keys only through the public visibility gate."""
+
+    def __init__(self, repository: SearchRepository, objects: ObjectStore) -> None:
+        self._repository = repository
+        self._objects = objects
+
+    def image(self, asset_id: UUID, variant: Literal["thumbnail", "original"]) -> AssetImage | None:
+        detail = self._repository.asset(asset_id)
+        if detail is None:
+            return None
+        key = detail.card.thumbnail_key
+        if variant == "original":
+            key = detail.original_key
+        # Ingestion permits only these formats and generates these extensions.
+        media_type = {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"}.get(
+            key.rsplit(".", 1)[-1]
+        )
+        if media_type is None:
+            return None
+        body = self._objects.get_bytes(key)
+        # A rights withdrawal during object I/O must also fail closed.
+        if body is None or self._repository.asset(asset_id) is None:
+            return None
+        return AssetImage(body=body, media_type=media_type)
 
 
 class SearchService:

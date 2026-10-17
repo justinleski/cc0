@@ -16,6 +16,8 @@ class AssetCard:
     created_year_end: int | None
     thumbnail_key: str
     ingested_at: datetime
+    width: int
+    height: int
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,12 @@ class AssetDetail:
 class RelatedHit:
     card: AssetCard
     reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AssetImage:
+    body: bytes
+    media_type: str
 
 
 @dataclass(frozen=True)

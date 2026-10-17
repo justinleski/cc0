@@ -4,11 +4,13 @@ Sync handlers run in FastAPI's threadpool, so a text embedding does not block
 the event loop. Query vectors are computed for the request and not stored.
 """
 
+from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
+from app.integrations.object_store import ObjectStore, ObjectStoreUnavailable
 from app.search.cursor import InvalidCursor
 from app.search.models import (
     AssetCard,
@@ -18,7 +20,7 @@ from app.search.models import (
     SearchPage,
 )
 from app.search.repository import SearchRepository
-from app.search.service import SearchQueryError, SearchService
+from app.search.service import AssetMediaService, SearchQueryError, SearchService
 
 router = APIRouter(prefix="/api/v1")
 
@@ -36,6 +38,8 @@ class AssetCardModel(BaseModel):
     created_year_end: int | None
     thumbnail_key: str
     ingested_at: str
+    width: int
+    height: int
 
 
 class SearchResponseModel(BaseModel):
@@ -92,6 +96,8 @@ def _card(card: AssetCard) -> AssetCardModel:
         created_year_end=card.created_year_end,
         thumbnail_key=card.thumbnail_key,
         ingested_at=card.ingested_at.isoformat(),
+        width=card.width,
+        height=card.height,
     )
 
 
@@ -142,12 +148,33 @@ def asset_detail(asset_id: UUID, request: Request) -> AssetDetailModel:
         **card.model_dump(),
         description=detail.description,
         original_key=detail.original_key,
-        width=detail.width,
-        height=detail.height,
         landing_url=detail.landing_url,
         rights_type=detail.rights_type,
         evidence_url=detail.evidence_url,
         verified_at=detail.verified_at.isoformat(),
+    )
+
+
+@router.get("/assets/{asset_id}/image/{variant}")
+def asset_image(
+    asset_id: UUID,
+    variant: Literal["thumbnail", "original"],
+    request: Request,
+) -> Response:
+    service = AssetMediaService(
+        SearchRepository(request.app.state.db_engine),
+        ObjectStore(request.app.state.s3_client, request.app.state.settings.object_store_bucket),
+    )
+    try:
+        image = service.image(asset_id, variant)
+    except ObjectStoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail="image temporarily unavailable") from exc
+    if image is None:
+        raise HTTPException(status_code=404, detail="image not found")
+    return Response(
+        content=image.body,
+        media_type=image.media_type,
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
     )
 
 
