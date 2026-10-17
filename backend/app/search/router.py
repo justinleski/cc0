@@ -82,6 +82,7 @@ def _service(request: Request) -> SearchService:
     return SearchService(
         SearchRepository(request.app.state.db_engine),
         request.app.state.embeddings,
+        request.app.state.cursor_key,
     )
 
 

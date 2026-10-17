@@ -206,6 +206,17 @@ pages return the next slice of that snapshot. Loading a card reads
 the positions from the first page. An asset that becomes public after the first
 page appears on a new search. The snapshot cap above is the product limit for
 one ranked query.
+Ranked cursors are HMAC signed with a dedicated `CURSOR_SIGNING_KEY` containing
+32 random bytes encoded as 64 hex digits. It is required for API startup and
+must be identical across API replicas; it is not a database credential or a
+published default. Generate it with `openssl rand -hex 32` and provision it
+privately through `.env` locally or environment secret injection in production.
+Modified payloads return HTTP 400 before card reads. Rotating the key
+invalidates outstanding ranked cursors, so clients must restart pagination.
+Encoded cursors are limited to 22,000 characters and decoded payloads to 16 KiB;
+search text is limited to 2,048 UTF-8 bytes and location to 512 UTF-8 bytes. The existing
+page limit is 1–50. Browse keysets remain unsigned because SQL reapplies their
+filters on every page.
 `GET /api/v1/creators?query=` lists creators and sets `did_you_mean` when the
 closest name is not the typed string.
 

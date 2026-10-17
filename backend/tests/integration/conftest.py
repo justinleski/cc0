@@ -1,4 +1,5 @@
 import os
+import secrets
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from psycopg import sql
+from pydantic import SecretStr
 from sqlalchemy.engine import make_url
 
 from app.core.config import Settings
@@ -39,7 +41,9 @@ def stack_settings() -> Settings:
     Probing the ports separately keeps a stopped container from looking like bad
     credentials, a missing extension, or a missing bucket.
     """
-    settings = Settings()
+    settings = Settings().model_copy(
+        update={"cursor_signing_key": SecretStr(secrets.token_hex(32))}
+    )
     _require_tcp("Postgres", settings.database_url, 5432)
     store = settings.object_store_endpoint
     _require_tcp("RustFS", store, 443 if urlsplit(store).scheme == "https" else 80)

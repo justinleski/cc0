@@ -8,18 +8,20 @@ authentication protects persistent private boards in the API and frontend.
 
 ## Start locally
 
-For the complete container stack, Docker Compose is the only prerequisite:
+For the complete container stack, provision a private cursor key once, then start Compose:
 
 ```bash
+cp -n .env.example .env
+grep -q '^CURSOR_SIGNING_KEY=' .env || printf 'CURSOR_SIGNING_KEY=%s\n' "$(openssl rand -hex 32)" >> .env
 docker compose up --build -d
 ```
 
 This builds the API and Next.js images, starts PostgreSQL and RustFS, creates the
 local bucket, applies migrations, and starts the API and frontend in that order.
 Open http://127.0.0.1:3000; API readiness is at
-http://127.0.0.1:8000/api/v1/ready. The root `.env` is optional; copy
+http://127.0.0.1:8000/api/v1/ready. Copy
 `.env.example` to `.env` and edit it to enable local authentication or change
-local settings.
+local settings. Keep the generated key private and stable across API restarts.
 To run worker or token commands with the same backend image:
 
 ```bash
@@ -38,6 +40,7 @@ containerized API and frontend before starting host processes on the same ports.
 
 ```bash
 cp -n .env.example .env
+grep -q '^CURSOR_SIGNING_KEY=' .env || printf 'CURSOR_SIGNING_KEY=%s\n' "$(openssl rand -hex 32)" >> .env
 python3 -m venv backend/.venv
 backend/.venv/bin/pip install -e "backend[dev]"
 (cd frontend && npm ci)

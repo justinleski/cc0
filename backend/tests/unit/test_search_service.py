@@ -1,5 +1,6 @@
 """Search behavior without PostgreSQL, HTTP, or model downloads."""
 
+import base64
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -86,7 +87,7 @@ def search_context():
     events = []
     repository = MemoryRepository(events)
     embeddings = RecordingEmbeddings(events)
-    return SearchService(repository, embeddings), repository, embeddings, events
+    return SearchService(repository, embeddings, b"test-cursor-key"), repository, embeddings, events
 
 
 def search(service, **overrides):
@@ -185,6 +186,43 @@ def test_ranked_pages_keep_snapshot_positions_when_cards_are_suppressed(search_c
     assert third.next_cursor is None
     assert decode_cursor(second.next_cursor)["offset"] == 4
     assert events == [("cards", [card(3).id, card(4).id]), ("cards", [card(5).id])]
+
+
+def test_ranked_cursor_rejects_forged_snapshot_ids_before_io(search_context):
+    service, repository, _, events = search_context
+    first = search(service, q='"harbor"', location="Paris", limit=1)
+    payload = decode_cursor(first.next_cursor)
+    payload["ids"][1] = str(card(5).id)
+    events.clear()
+    with pytest.raises(InvalidCursor):
+        search(service, q='"harbor"', location="Paris", limit=1, cursor=encode_cursor(payload))
+    assert events == []
+
+
+def test_cursor_rejects_oversized_payload_before_io(search_context):
+    service, _, _, events = search_context
+    with pytest.raises(InvalidCursor):
+        search(service, q="coastal", cursor="A" * 22001)
+    decoded_oversize = base64.urlsafe_b64encode(b"{" + b" " * 16384 + b"}").decode()
+    with pytest.raises(InvalidCursor):
+        decode_cursor(decoded_oversize)
+    assert events == []
+
+
+def test_oversized_search_scope_rejected_before_io(search_context):
+    service, _, _, events = search_context
+    for overrides in ({"q": "x" * 2049}, {"location": "x" * 513}, {"q": "😀" * 513}):
+        with pytest.raises(SearchQueryError, match="too long"):
+            search(service, **overrides)
+    assert events == []
+
+
+def test_unicode_query_within_scope_limit_can_paginate(search_context):
+    service, _, _, _ = search_context
+    query = "😀" * 512
+    first = search(service, q=query, limit=1)
+    assert first.next_cursor
+    assert search(service, q=query, limit=1, cursor=first.next_cursor).items == [card(2)]
 
 
 @pytest.mark.parametrize(

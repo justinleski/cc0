@@ -1,6 +1,11 @@
+import hashlib
+from uuid import UUID
+
 import pytest
 
 from app.core.config import Settings
+from app.main import create_app
+from app.search.cursor import InvalidCursor, RankSnapshot, expect_cursor, rank_cursor
 
 
 def _production(**overrides: str) -> Settings:
@@ -91,3 +96,41 @@ def test_app_env_local_ignores_case_and_whitespace(monkeypatch):
     assert spaced.app_env == " local "
     monkeypatch.setenv("APP_ENV", "Local")
     assert Settings(_env_file=None).app_env == "Local"
+
+
+def test_api_requires_an_independent_256_bit_cursor_secret():
+    settings = Settings(_env_file=None)
+    with pytest.raises(ValueError, match="CURSOR_SIGNING_KEY"):
+        create_app(settings)
+    for value in ("cc0_api_local_password", "0" * 64, "short", "x" * 64):
+        with pytest.raises(ValueError, match="CURSOR_SIGNING_KEY"):
+            create_app(Settings(_env_file=None, cursor_signing_key=value))
+    key = "0123456789abcdef" * 4
+    with pytest.raises(ValueError, match="independent"):
+        create_app(Settings(
+            _env_file=None,
+            database_url=f"postgresql://cc0_api:{key}@localhost/cc0",
+            cursor_signing_key=key,
+        ))
+    configured = Settings(_env_file=None, cursor_signing_key=key)
+    assert create_app(configured).state.cursor_key == bytes.fromhex(key)
+    assert key not in repr(configured)
+
+
+def test_published_database_password_cannot_sign_a_ranked_cursor():
+    configured = Settings(_env_file=None, cursor_signing_key="0123456789abcdef" * 4)
+    app = create_app(configured)
+    legacy_key = hashlib.sha256(
+        b"cc0-ranked-cursor-v1\0cc0_api_local_password"
+    ).digest()
+    forged = rank_cursor(
+        RankSnapshot(
+            applied_query="coastal", phrases=(), unquoted="coastal",
+            creator_id=None, location=None, year_from=None, year_to=None,
+            model_key="fake", model_version="deterministic-v1",
+            ids=(UUID(int=1), UUID(int=2)), offset=1,
+        ),
+        legacy_key,
+    )
+    with pytest.raises(InvalidCursor):
+        expect_cursor(forged, "rank", app.state.cursor_key)

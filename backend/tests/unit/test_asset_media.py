@@ -51,7 +51,7 @@ def test_image_route_hides_storage_errors_and_disables_caching(monkeypatch):
         raise ObjectStoreUnavailable("private endpoint and credentials")
 
     monkeypatch.setattr(AssetMediaService, "image", unavailable)
-    app = create_app(Settings(_env_file=None))
+    app = create_app(Settings(_env_file=None, cursor_signing_key="0123456789abcdef" * 4))
     with TestClient(app) as client:
         response = client.get(f"/api/v1/assets/{uuid4()}/image/original")
     assert response.status_code == 503

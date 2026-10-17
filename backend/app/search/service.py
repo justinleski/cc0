@@ -63,9 +63,12 @@ class AssetMediaService:
 
 
 class SearchService:
-    def __init__(self, repository: SearchRepository, embeddings: EmbeddingProvider) -> None:
+    def __init__(
+        self, repository: SearchRepository, embeddings: EmbeddingProvider, cursor_key: bytes
+    ) -> None:
         self._repository = repository
         self._embeddings = embeddings
+        self._cursor_key = cursor_key
 
     def search(
         self,
@@ -78,6 +81,8 @@ class SearchService:
         limit: int,
         cursor: str | None,
     ) -> SearchPage:
+        if len((q or "").encode()) > 2048 or len((location or "").encode()) > 512:
+            raise SearchQueryError("query or location is too long")
         if year_from is not None and year_to is not None and year_from > year_to:
             raise SearchQueryError("year_from cannot be after year_to")
         parsed = parse_search_text(q or "")
@@ -142,7 +147,7 @@ class SearchService:
             model_version=self._embeddings.model_version,
         )
         if cursor is not None:
-            snapshot = parse_rank_cursor(expect_cursor(cursor, "rank"))
+            snapshot = parse_rank_cursor(expect_cursor(cursor, "rank", self._cursor_key))
             require_same_scope(snapshot, scope)
             return self._page_snapshot(
                 list(snapshot.ids),
@@ -199,7 +204,8 @@ class SearchService:
                     model_version=scope.model_version,
                     ids=tuple(ordered),
                     offset=next_offset,
-                )
+                ),
+                self._cursor_key,
             )
         return SearchPage(
             applied_query=parsed.applied_query,

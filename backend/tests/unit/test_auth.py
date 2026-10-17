@@ -22,7 +22,8 @@ KEY = "unit-tests-only-signing-secret-32-bytes"
 
 def local_settings(**overrides):
     return Settings(
-        _env_file=None, app_env="local", auth_mode="local", auth_local_signing_key=KEY, **overrides
+        _env_file=None, app_env="local", auth_mode="local", auth_local_signing_key=KEY,
+        cursor_signing_key="0123456789abcdef" * 4, **overrides
     )
 
 

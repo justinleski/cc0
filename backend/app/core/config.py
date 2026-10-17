@@ -1,4 +1,5 @@
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -180,6 +181,23 @@ class Settings(BaseSettings):
 
     auth_mode: Literal["disabled", "local"] = "disabled"
     auth_local_signing_key: SecretStr = SecretStr("")
+    cursor_signing_key: SecretStr = SecretStr("")
+
+    def cursor_key(self) -> bytes:
+        """The API requires a separately provisioned 256-bit signing key."""
+        value = self.cursor_signing_key.get_secret_value()
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+            raise ValueError("CURSOR_SIGNING_KEY must be 32 random bytes encoded as 64 hex digits")
+        key = bytes.fromhex(value)
+        if len(set(key)) == 1:
+            raise ValueError("CURSOR_SIGNING_KEY must be randomly generated")
+        if value in (
+            make_url(self.database_url).password,
+            make_url(self.worker_database_url).password,
+            make_url(self.migration_database_url).password,
+        ):
+            raise ValueError("CURSOR_SIGNING_KEY must be independent of database credentials")
+        return key
 
     app_env: str = "local"
     migration_database_url: str = Field(

@@ -5,6 +5,9 @@ phrases, grants, and ordering against vectors the test can recompute. They do
 not load OpenCLIP.
 """
 
+import base64
+import hashlib
+import hmac
 from collections.abc import Iterator
 from dataclasses import replace
 from uuid import UUID, uuid4
@@ -562,6 +565,35 @@ def test_ranked_pages_stay_on_the_snapshot_after_suppression(
             params={"q": query, "limit": 1, "cursor": encode_cursor(payload)},
         )
         assert forged.status_code == 400
+        payload = decode_cursor(cursor)
+        payload["ids"][1] = page1_id
+        forged_ids = client.get(
+            "/api/v1/assets",
+            params={"q": query, "limit": 1, "cursor": encode_cursor(payload)},
+        )
+        assert forged_ids.status_code == 400
+        # The old patch signed with the published default database password.
+        # A cursor signed with that known value must now be rejected.
+        legacy_key = hashlib.sha256(
+            b"cc0-ranked-cursor-v1\0cc0_api_local_password"
+        ).digest()
+        encoded = encode_cursor(payload)
+        legacy_signature = base64.urlsafe_b64encode(
+            hmac.new(legacy_key, encoded.encode(), hashlib.sha256).digest()
+        ).decode().rstrip("=")
+        legacy_forgery = f"{encoded}.{legacy_signature}"
+        assert client.get(
+            "/api/v1/assets", params={"q": query, "limit": 1, "cursor": legacy_forgery}
+        ).status_code == 400
+        for field, value in (("q", "other"), ("location", "Paris"), ("year_from", 1800)):
+            changed = decode_cursor(cursor)
+            changed[field] = value
+            assert client.get(
+                "/api/v1/assets", params={"q": query, "limit": 1, "cursor": encode_cursor(changed)}
+            ).status_code == 400
+        assert client.get(
+            "/api/v1/assets", params={"q": query, "cursor": "A" * 22001}
+        ).status_code == 400
 
 
 def test_image_routes_read_private_objects_and_recheck_rights(ready_catalog: ReadyCatalog):

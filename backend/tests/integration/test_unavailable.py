@@ -21,6 +21,7 @@ def test_unreachable_dependencies_return_redacted_503():
         object_store_endpoint=f"http://{_BLACKHOLE}:9000",
         object_store_access_key="distinctive-access-key",
         object_store_secret_key="secret-object-key",
+        cursor_signing_key="0123456789abcdef" * 4,
         # Bounds the probe statement, not the connect: the shared API pool owns
         # connect_timeout now, and statement_timeout is SET LOCAL per probe.
         readiness_timeout_seconds=0.2,

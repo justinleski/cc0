@@ -11,6 +11,7 @@ def _settings(**overrides) -> Settings:
         "database_url": "postgresql://cc0_api:secret-db-password@127.0.0.1:5432/cc0",
         "object_store_access_key": "secret-access-key",
         "object_store_secret_key": "secret-object-key",
+        "cursor_signing_key": "0123456789abcdef" * 4,
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)

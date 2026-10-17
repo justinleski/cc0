@@ -15,6 +15,8 @@ from app.search.router import router as search_router
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging()
+    configured = settings or get_settings()
+    cursor_key = configured.cursor_key()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -36,7 +38,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             engine.dispose()
 
     app = FastAPI(title="cc0", version="0.1.0", lifespan=lifespan)
-    app.state.settings = settings or get_settings()
+    app.state.settings = configured
+    app.state.cursor_key = cursor_key
     app.add_middleware(RequestContextMiddleware)
 
     @app.middleware("http")

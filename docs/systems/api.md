@@ -73,8 +73,9 @@ flowchart TB
   an object-store host of `localhost` or `127.0.0.1`. See
   [local development](../local-development.md).
 - Uvicorn loads `app.main:app` at import and fails fast on a bad `.env` or on
-  dummy secrets when `APP_ENV` is not local. The unit suite imports `create_app`
-  under pytest, which skips that module-level app, and passes `_env_file=None`
+  dummy secrets when `APP_ENV` is not local. It also requires a separately
+  provisioned `CURSOR_SIGNING_KEY` before serving any route. The unit suite
+  imports `create_app` under pytest, which skips that module-level app, and passes `_env_file=None`
   so collection does not read the repository `.env`.
 - Process entry points load settings once; requests use `app.state.settings`,
   never `get_settings()`. Tests inject `create_app(Settings(...))`.

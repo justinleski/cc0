@@ -102,3 +102,16 @@ assets. The detailed invariants remain in the
   portable to another database.
 - Incremental adoption leaves different layouts in the backend temporarily;
   system documentation must describe each feature's actual implementation.
+
+## Amendment — 2026-10-17: ranked cursor authentication
+
+The decision above to preserve cursor formats records the scope of the earlier
+layering refactor. It remains the historical reason that work left pagination
+behavior alone. M3 security review later found that a ranked cursor contains a
+client-held snapshot of result IDs: scope validation alone could not establish
+that the API issued that snapshot. Ranked cursors now require an HMAC signature
+from a private, dedicated `CURSOR_SIGNING_KEY`, and invalid signatures return
+HTTP 400. This deliberately changes the ranked cursor format to protect result
+integrity. Browse keysets still reapply filters in SQL and remain unsigned. See
+the [search cursor contract](../systems/search.md#search) for the current
+behavior and key rotation consequences.

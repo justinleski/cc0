@@ -40,7 +40,9 @@ def test_inference_precedes_checkout_and_candidate_queries_share_a_connection(fa
             events.append(("embed", text))
             return [1.0, 0.0]
 
-    service = SearchService(SearchRepository(Engine()), Embeddings(dimensions=2))
+    service = SearchService(
+        SearchRepository(Engine()), Embeddings(dimensions=2), b"test-cursor-key"
+    )
     args = dict(
         q="coastal",
         creator_id=None,

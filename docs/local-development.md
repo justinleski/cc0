@@ -13,6 +13,15 @@ is left alone). Compose reads it when present and passes it to backend container
 host backend processes read it directly. In containers, Compose overrides the
 three database URLs and `OBJECT_STORE_ENDPOINT` with internal `postgres` and
 `rustfs` addresses. Host processes use the URLs and endpoint in `.env`.
+The API also requires `CURSOR_SIGNING_KEY`, a private 32-byte random value encoded
+as 64 hex digits. Generate it once with `openssl rand -hex 32` and put it in
+`.env`; Compose passes it to the API container. The API fails startup if it is
+missing or malformed. Migration and worker commands do not need it. Tests
+provision isolated random keys, including in CI. Use the same value on every
+API replica and keep it separate from database and local-auth credentials.
+Rotating it invalidates outstanding ranked pagination cursors; clients can
+start a new search. See [search](systems/search.md).
+
 Backend fields are
 case insensitive. Unknown keys in `.env` fail startup, except the explicit
 Compose allowlist: `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`,
