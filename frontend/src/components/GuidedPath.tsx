@@ -1,4 +1,4 @@
-import type { Work } from "@/mock/catalog";
+import type { Work } from "@/api/catalog";
 import { WorkTile } from "@/components/WorkTile";
 
 export function GuidedPath({ query, works }: { query: string; works: Work[] }) {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useLayoutEffect, useRef, useState } from "react";
-import type { Work } from "@/mock/catalog";
+import type { Work } from "@/api/catalog";
 import { WorkTile } from "@/components/WorkTile";
 
 const ROW = 8;

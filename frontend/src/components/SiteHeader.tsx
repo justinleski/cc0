@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { searchFields } from "@/api/catalog-query";
 import { usePathname, useSearchParams } from "next/navigation";
 
 export function SiteHeader() {
@@ -28,11 +29,13 @@ export function SiteHeader() {
             Boards
           </Link>
         </nav>
-        <form className="ml-auto min-w-[12rem] flex-1 md:max-w-sm" action="/" method="get" role="search">
+        <form method="get" className="ml-auto min-w-[12rem] flex-1 md:max-w-sm" action="/" role="search">
+          {searchFields.filter((field) => field !== "q" && field !== "cursor").map((field) => params.get(field) ? <input key={field} type="hidden" name={field} value={params.get(field)!} /> : null)}
           <label className="sr-only" htmlFor="q">
             Search works
           </label>
           <input
+            key={query}
             id="q"
             name="q"
             defaultValue={query}

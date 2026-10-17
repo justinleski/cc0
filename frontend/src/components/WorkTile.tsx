@@ -1,6 +1,6 @@
-import Image from "next/image";
+import { CatalogImage } from "@/components/CatalogImage";
 import Link from "next/link";
-import type { Work } from "@/mock/catalog";
+import type { Work } from "@/api/catalog";
 
 type MoveControls = {
   canEarlier: boolean;
@@ -20,8 +20,8 @@ export function WorkTile({
   const sizes = `${Math.ceil(displayWidth)}px`;
   return (
     <article className="work-tile">
-      <Link className="work-tile__link" href={`/works/${work.id}`}>
-        <Image
+      <Link className="work-tile__link" href={`/works/${work.id}`} prefetch={false}>
+        <CatalogImage
           className="work-tile__image"
           src={work.src}
           alt={work.alt}
@@ -30,7 +30,7 @@ export function WorkTile({
           sizes={sizes}
         />
         <span className="work-tile__blur-clip" aria-hidden="true">
-          <Image
+          <CatalogImage
             className="work-tile__blur"
             src={work.src}
             alt=""
@@ -40,7 +40,7 @@ export function WorkTile({
           />
         </span>
         <span className="work-tile__scrim" aria-hidden="true" />
-        <p className="work-tile__title">{work.title}</p>
+        <p className="work-tile__title">{work.title}{work.reasons?.length ? <span className="mt-1 block text-xs">{work.reasons.join(" · ")}</span> : null}</p>
       </Link>
       {move ? (
         <div className="work-tile__moves">
