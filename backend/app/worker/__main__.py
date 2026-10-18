@@ -1,7 +1,9 @@
 """Operator entry point: `python -m app.worker <command>`.
 
     ingest   discover (or take explicit ids), queue what is due, run ingest then embed
-    drain    run already queued ingest jobs, then embed jobs
+    drain    run already queued ingest jobs, then embed jobs, then board exports
+    exports  run queued board export jobs only
+    exports-cleanup  retire expired or rights-withdrawn archives and sweep orphans
     reembed  queue assets missing the active checkpoint and run those jobs
     jobs     list jobs in one state, which is how dead letters are inspected
     redrive  return a dead job to pending and reset its attempts
@@ -19,6 +21,7 @@ from app.core.logging import configure_logging
 from app.db import catalog
 from app.embeddings.models import EmbedOutcome
 from app.ingestion.models import IngestOutcome
+from app.worker.recovery import follow_ingest
 from app.worker.runtime import WorkerRuntime, build_runtime
 
 logger = logging.getLogger("cc0.worker")
@@ -31,6 +34,9 @@ def _parser() -> argparse.ArgumentParser:
     ingest = commands.add_parser("ingest", help="discover, queue, and run")
     ingest.add_argument("--limit", type=int, default=None, help="records to discover")
     ingest.add_argument(
+        "--follow", action="store_true", help="wait for and resume scheduled retries"
+    )
+    ingest.add_argument(
         "--object-id",
         action="append",
         default=[],
@@ -40,6 +46,14 @@ def _parser() -> argparse.ArgumentParser:
 
     drain = commands.add_parser("drain", help="run queued jobs")
     drain.add_argument("--max-jobs", type=int, default=None)
+    drain.add_argument(
+        "--follow", action="store_true", help="wait for and resume scheduled retries"
+    )
+
+    exports = commands.add_parser("exports", help="run queued board exports")
+    exports.add_argument("--max-jobs", type=int, default=None)
+
+    commands.add_parser("exports-cleanup", help="retire expired export archives")
 
     commands.add_parser("reembed", help="queue and run missing embeddings for the active model")
 
@@ -90,18 +104,48 @@ def _run_embed(runtime: WorkerRuntime, max_jobs: int | None) -> int:
     return code
 
 
+def _run_exports(runtime: WorkerRuntime, max_jobs: int | None) -> int:
+    outcomes = runtime.export_worker.drain(max_jobs)
+    for outcome in outcomes:
+        logger.info(
+            "export export_id=%s result=%s detail=%s",
+            outcome.export_id,
+            outcome.result,
+            outcome.detail,
+        )
+    return 1 if any(outcome.result == "failed" for outcome in outcomes) else 0
+
+
 def _dispatch(args: argparse.Namespace, runtime: WorkerRuntime) -> int:
     service = runtime.service
     if args.command == "ingest":
         external_ids = args.object_ids or service.discover(args.limit)
         for external_id, reason in service.enqueue(list(external_ids)).items():
             logger.info("skipped external_id=%s reason=%s", external_id, reason)
-        ingest_code = _report(runtime.ingest_worker.drain())
+        outcomes = (
+            follow_ingest(runtime.ingest_worker, runtime.job_store)
+            if args.follow
+            else runtime.ingest_worker.drain()
+        )
+        ingest_code = _report(outcomes)
         return max(ingest_code, _run_embed(runtime, None))
 
     if args.command == "drain":
-        ingest_code = _report(runtime.ingest_worker.drain(args.max_jobs))
-        return max(ingest_code, _run_embed(runtime, args.max_jobs))
+        outcomes = (
+            follow_ingest(runtime.ingest_worker, runtime.job_store, max_jobs=args.max_jobs)
+            if args.follow
+            else runtime.ingest_worker.drain(args.max_jobs)
+        )
+        ingest_code = _report(outcomes)
+        embed_code = max(ingest_code, _run_embed(runtime, args.max_jobs))
+        return max(embed_code, _run_exports(runtime, args.max_jobs))
+
+    if args.command == "exports":
+        return _run_exports(runtime, args.max_jobs)
+
+    if args.command == "exports-cleanup":
+        logger.info("exports-cleanup %s", runtime.export_service.cleanup())
+        return 0
 
     if args.command == "reembed":
         queued = runtime.embed_service.enqueue_missing()

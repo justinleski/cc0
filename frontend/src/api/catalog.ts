@@ -1,7 +1,7 @@
 // Server-side transport and response adaptation. Components never use object keys.
 import type { CatalogParams } from "./catalog-query";
 
-type AssetCard = {
+export type AssetCard = {
   id: string;
   title: string | null;
   creator_id: string | null;
@@ -86,7 +86,7 @@ function imageUrl(id: string, variant: "thumbnail" | "original") {
   return `/api/catalog/${encodeURIComponent(id)}/image/${variant}`;
 }
 
-function card(asset: AssetCard): Work {
+export function card(asset: AssetCard): Work {
   const title = asset.title || "Untitled";
   const start = asset.created_year_start;
   const end = asset.created_year_end;

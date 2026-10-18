@@ -27,11 +27,13 @@ class ObjectStoreUnavailable(Exception):
     """The object store could not be reached or refused the call."""
 
 
-def create_s3_client(settings: Settings, timeout_seconds: float | None = None):
+def create_s3_client(
+    settings: Settings, timeout_seconds: float | None = None, endpoint: str | None = None
+):
     timeout = settings.readiness_timeout_seconds if timeout_seconds is None else timeout_seconds
     return boto3.client(
         "s3",
-        endpoint_url=settings.object_store_endpoint,
+        endpoint_url=endpoint or settings.object_store_endpoint,
         aws_access_key_id=settings.object_store_access_key,
         aws_secret_access_key=settings.object_store_secret_key,
         region_name=settings.object_store_region,
@@ -51,7 +53,7 @@ def content_key(prefix: str, sha256: str, extension: str) -> str:
 
 
 class ObjectStore:
-    """Writes and existence checks. Nothing here deletes an object."""
+    """Writes, reads and existence checks. Only export cleanup deletes an object."""
 
     def __init__(self, client, bucket: str) -> None:
         self._client = client
@@ -109,3 +111,56 @@ class ObjectStore:
             )
         except (BotoCoreError, ClientError) as exc:
             raise ObjectStoreUnavailable(type(exc).__name__) from exc
+
+    def put_file(self, key: str, fileobj, content_type: str, sha256: str, size: int) -> None:
+        """Upload a finished local file. An object appears only once it is complete.
+
+        S3 multipart uploads are invisible until completed, and a single PUT is
+        atomic, so a reader never sees a partial archive. The length is checked
+        afterwards because the caller publishes the key on the strength of it.
+        """
+        try:
+            self._client.upload_fileobj(
+                fileobj,
+                self._bucket,
+                key,
+                ExtraArgs={"ContentType": content_type, "Metadata": {SHA256_METADATA_KEY: sha256}},
+            )
+            head = self._client.head_object(Bucket=self._bucket, Key=key)
+        except (BotoCoreError, ClientError) as exc:
+            raise ObjectStoreUnavailable(type(exc).__name__) from exc
+        if head.get("ContentLength") != size:
+            raise ObjectStoreUnavailable("size_mismatch")
+
+    def delete(self, key: str) -> None:
+        try:
+            self._client.delete_object(Bucket=self._bucket, Key=key)
+        except (BotoCoreError, ClientError) as exc:
+            raise ObjectStoreUnavailable(type(exc).__name__) from exc
+
+    def list_objects(self, prefix: str):
+        """Yield (key, last_modified) under a prefix, a page at a time."""
+        try:
+            paginator = self._client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+                for item in page.get("Contents", []):
+                    yield item["Key"], item["LastModified"]
+        except (BotoCoreError, ClientError) as exc:
+            raise ObjectStoreUnavailable(type(exc).__name__) from exc
+
+    def presigned_get(self, key: str, expires_seconds: int, filename: str) -> str:
+        """A short-lived GET URL. Signing is local; it makes no request.
+
+        Build the client from the browser-reachable endpoint, or the host in the
+        signature will not match the one the browser calls.
+        """
+        return self._client.generate_presigned_url(
+            "get_object",
+            Params={
+                "Bucket": self._bucket,
+                "Key": key,
+                "ResponseContentDisposition": f'attachment; filename="{filename}"',
+                "ResponseContentType": "application/zip",
+            },
+            ExpiresIn=expires_seconds,
+        )

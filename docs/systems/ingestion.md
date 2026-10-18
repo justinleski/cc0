@@ -58,6 +58,7 @@ flowchart TD
 | [models.py](../../backend/app/ingestion/models.py) | SourceRecord, Asset, Evidence, and IngestOutcome dataclasses; no HTTP or driver types |
 | [worker/ingest.py](../../backend/app/worker/ingest.py) | Drain/claim loop, lease lifecycle, retries, exhaustion and failure settlement |
 | [worker/jobs.py](../../backend/app/worker/jobs.py) | Claim, lease, retry, dead letter, redrive |
+| [worker/recovery.py](../../backend/app/worker/recovery.py) | Opt-in loop that waits for due ingest retries and resumes them |
 | [worker/lease.py](../../backend/app/worker/lease.py) | Background claim renewal and deadline checks |
 | [worker/runtime.py](../../backend/app/worker/runtime.py) | Injects the shared worker engine, job store, provider clients and object store |
 | [embeddings/repository.py](../../backend/app/embeddings/repository.py) | Embedding persistence and claim-fenced publication |
@@ -226,6 +227,9 @@ States: `pending`, `leased`, `retry_wait`, `succeeded`, `dead`.
 - Transient (timeout, connection error, DNS failure, 429, 5xx, object store
   unavailable) goes to `retry_wait` with exponential backoff and jitter,
   honoring a numeric `Retry-After`.
+- A 429 also moves other unclaimed jobs for that provider to `retry_wait` until
+  at least the same deadline. Existing later deadlines are preserved. This
+  prevents the next Met item from immediately hitting the same rate limit.
 - Permanent (other 4xx, allowlist or private-address refusal, non-image body,
   oversize, empty body, missing image URL) goes `dead` immediately without
   spending the transient budget.
@@ -277,6 +281,8 @@ Run from `backend/`, with the stack up and migrations applied:
 .venv/bin/python -m app.worker ingest                 # discover, queue, ingest, embed
 .venv/bin/python -m app.worker ingest --object-id 100001
 .venv/bin/python -m app.worker drain                  # queued ingest, then embed
+.venv/bin/python -m app.worker ingest --follow         # wait for due ingest retries
+.venv/bin/python -m app.worker drain --follow          # resume queued retries without discovery
 .venv/bin/python -m app.worker reembed                # assets missing the active model
 .venv/bin/python -m app.worker jobs --state dead      # inspect dead letters
 .venv/bin/python -m app.worker redrive --dedupe-key ingest:met:400001
@@ -287,6 +293,11 @@ Run from `backend/`, with the stack up and migrations applied:
 recorded catalog a first run stores 10 assets, negative-caches 6 records, and
 dead-letters 3 eligible records whose images are refused by design (missing
 image URL, off-allowlist host, HTML body). A second run makes no requests.
+Without `--follow`, each command drains only work due now; `retry_wait` jobs
+need a later invocation. With `--follow`, the command waits for database retry
+deadlines or live lease expirations and drains until no active ingest jobs remain. It can be
+stopped and rerun safely. A long provider `Retry-After` can make it wait a long
+time; inspect jobs with `jobs --state retry_wait` while it runs.
 
 `INGEST_SOURCE_MODE=network` switches to the live Met API. It is opt-in and
 never used by tests. Regenerate fixtures with
@@ -318,7 +329,7 @@ ids=(
 )
 args=()
 for id in "${ids[@]}"; do args+=(--object-id "$id"); done
-INGEST_SOURCE_MODE=network .venv/bin/python -m app.worker ingest "${args[@]}"
+INGEST_SOURCE_MODE=network .venv/bin/python -m app.worker ingest --follow "${args[@]}"
 ```
 
 The default `fake` embedding provider publishes these assets, but its vectors
@@ -373,6 +384,12 @@ large live run.
 - The `Pacer` spaces requests within one process. Replicas would need a shared
   token bucket.
 - An HTTP-date `Retry-After` falls back to computed backoff.
+- Met catalog discovery happens before jobs are queued. If discovery fails,
+  rerun `ingest`; there is no durable discovery job. `--object-id` avoids
+  discovery for a known ID. A malformed successful catalog response currently
+  produces an empty ID list rather than a retry.
+- `--follow` is an operator command, not a background scheduler. Once the
+  process exits, due retry jobs still require another invocation.
 
 ## Refactor validation
 

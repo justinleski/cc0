@@ -1,0 +1,76 @@
+{
+  "baseline_at": "2026-10-18T17:15:13.137759+00:00",
+  "candidates_sha256": "4667ec679b38cd53d048369c13835a5a5aaf98236c875fcc4eef2ffdc4c67fa5",
+  "catalog_sha256": "46f64b7b66999a33b620beec9d1edd28d5841a56e0484b158b815ae3e2461b54",
+  "catalog_size": 1000,
+  "category_counts": {
+    "animals": 138,
+    "architecture_interiors": 89,
+    "landscapes_seascapes": 94,
+    "patterns_designs": 153,
+    "portraits_figures": 68,
+    "sculpture_objects": 287,
+    "still_lifes_botanicals": 36,
+    "textiles_garments": 135
+  },
+  "category_method": "OpenCLIP prompt similarity; visually sampled, approximate",
+  "composition_counts": {
+    "near_square": 363,
+    "tall": 313,
+    "wide": 324
+  },
+  "dominant_hue_counts": {
+    "blue": 19,
+    "cyan": 49,
+    "green": 14,
+    "low_saturation": 111,
+    "magenta": 5,
+    "red": 281,
+    "yellow": 521
+  },
+  "failed_by_reason": {
+    "bad_status": 42,
+    "too_large": 3,
+    "unsupported_image_format": 1
+  },
+  "low_saturation_count": 434,
+  "model_key": "ViT-B-32",
+  "model_version": "laion2b_s34b_b79k",
+  "object_bytes": {
+    "originals": 1822567702,
+    "thumbnails": 25391216,
+    "total": 1847958918
+  },
+  "outcomes": {
+    "attempted": 1565,
+    "embedded_candidates": 1000,
+    "failed": 46,
+    "missing_active_embedding": 0,
+    "newly_embedded": 953,
+    "newly_stored": 953,
+    "rejected": 566,
+    "retried_ingest_jobs": 1,
+    "reused_embedding": 47,
+    "skipped_reused_ready": 47,
+    "stored_candidates": 1000,
+    "successful": 1000,
+    "unattempted": 835
+  },
+  "rejected_by_status": {
+    "NON_CC0_CACHED": 566
+  },
+  "sampling_category_counts": {
+    "animals": 141,
+    "architecture_interiors": 128,
+    "landscapes_seascapes": 116,
+    "patterns_designs": 136,
+    "portraits_figures": 135,
+    "sculpture_objects": 113,
+    "still_lifes_botanicals": 119,
+    "textiles_garments": 112
+  },
+  "sampling_visual_disagreement_count": 560,
+  "target": 1000,
+  "uncertain_visual_category_count": 289,
+  "verified_at": "2026-10-18T18:11:47.591457+00:00"
+}

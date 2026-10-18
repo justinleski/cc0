@@ -4,6 +4,7 @@ Status: Implemented backend and frontend. Related: [API](api.md), [storage](stor
 [search](search.md), [ADR-0003](../decisions/0003-database-roles.md),
 [ADR-0005](../decisions/0005-feature-based-layered-architecture.md),
 [MVP spec](../mvp-spec.md#8-boards-authentication-and-export-mvp).
+Board-aware suggestions are documented in [recommendations](recommendations.md).
 
 ## Local authentication
 

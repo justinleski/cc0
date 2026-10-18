@@ -79,10 +79,16 @@ class CreatorResponseModel(BaseModel):
 
 
 def _service(request: Request) -> SearchService:
+    embeddings = request.app.state.embeddings
+    model_key, model_version = request.app.state.settings.catalog_embedding_identity(
+        embeddings.model_key, embeddings.model_version
+    )
     return SearchService(
         SearchRepository(request.app.state.db_engine),
-        request.app.state.embeddings,
+        embeddings,
         request.app.state.cursor_key,
+        related_model_key=model_key,
+        related_model_version=model_version,
     )
 
 

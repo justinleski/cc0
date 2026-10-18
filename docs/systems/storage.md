@@ -17,7 +17,10 @@ creates the three login roles; 0002 granted broad default privileges for M0;
 with per-table grants. Revision 0006 adds `asset_embeddings` (worker
 `SELECT, INSERT` only), search lexemes on `assets`, `pg_trgm`, and the
 `ready_assets` view. The view keeps a READY asset whose latest evidence row
-(`checked_at DESC, id DESC`) is verified CC0. What the ingest rows mean is in [ingestion](ingestion.md).
+(`checked_at DESC, id DESC`) is verified CC0. Revision 0009 makes the view fail
+closed on ties: `rights_evidence.id` is a random UUID, so if any other row
+shares that latest `checked_at` and is not verified CC0, the asset is hidden.
+The columns are unchanged, so the `cc0_api` grant survives. What the ingest rows mean is in [ingestion](ingestion.md).
 Search is in [search](search.md). Users and boards are documented in
 [boards](boards.md); exports do not exist yet.
 

@@ -20,10 +20,14 @@ evolve.
   not yet built.
 - [Local development](local-development.md)
   Container and host startup, shared environment, and database concepts.
-- [Evaluation](evaluation.md) — not implemented; spec pointers.
+- [Evaluation](evaluation.md) — recommendation evaluation and benchmarks.
+- [Met evaluation catalog](met-evaluation-catalog.md) — versioned 1,000-image
+  dataset, local reproduction, rights audit, and measured distribution.
 - [AWS deployment](aws-deployment.md) — not implemented; pilot spec pointers.
 - [M2 engineering handoff](m2-handoff.md) — pooling, catalog grants, and the
   embedding grants are implemented. Users and boards grants are implemented; exports remain future work.
+- [Reproducing M4](m4-reproduction.md) — recommendations, exports, and the one-command journey.
+- [M4 checklist](m4-checklist.md) — branch layout and what is verified.
 - [Lint and tests](lint-test.md)
   The individual commands behind `./scripts/check.sh`.
 
@@ -34,6 +38,11 @@ evolve.
 
 - [Private boards and local authentication](systems/boards.md)
   M3 slices 2 and 3: signed local tokens, owner-scoped board API, and persistent frontend workflows.
+- [Board exports](systems/exports.md)
+  M4: background ZIP exports, job lifecycle, retries, rights rechecks, and storage lifecycle.
+- [Board recommendations](systems/recommendations.md)
+  M4: centroid baseline on pgvector, retriever/ranker split, experimental
+  complement control, stale-response-safe frontend rail.
 - [Storage](systems/storage.md)
   Postgres with pgvector, RustFS, migrations, database roles and catalog grants.
 - [API process](systems/api.md)
@@ -56,6 +65,8 @@ evolve.
 
 ## Not documented yet
 
-Board recommendations and exports remain future work in the [spec](mvp-spec.md).
+Exports remain future work in the [spec](mvp-spec.md). Board recommendations
+have a baseline; complement ranking is still a research track (see
+[recommendations](systems/recommendations.md#complement-is-an-open-problem)).
 The frontend browses the real catalog and saves private boards through the API.
 See [frontend/README.md](../frontend/README.md).

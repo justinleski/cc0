@@ -98,6 +98,10 @@ class IngestWorker:
         if job.attempts_exhausted:
             if not self._jobs.mark_dead(job, failure.reason):
                 return self._abandon(job, external_id, failure.reason)
+            if failure.reason == "rate_limited":
+                self._defer_provider(
+                    job, failure.retry_after or self._settings.ingest_backoff_base_seconds
+                )
             logger.warning(
                 "ingest job dead after retries external_id=%s reason=%s attempts=%s",
                 external_id,
@@ -106,7 +110,7 @@ class IngestWorker:
             )
             return IngestOutcome(external_id, catalog.JOB_DEAD, failure.reason, job_settled=True)
         delay = failure.retry_after
-        if delay is None:
+        if delay is None or (failure.reason == "rate_limited" and delay <= 0):
             delay = job_module.backoff_seconds(
                 job.attempt_count,
                 base_seconds=self._settings.ingest_backoff_base_seconds,
@@ -114,6 +118,8 @@ class IngestWorker:
             )
         if not self._jobs.retry_later(job, failure.reason, delay):
             return self._abandon(job, external_id, failure.reason)
+        if failure.reason == "rate_limited":
+            self._defer_provider(job, delay)
         logger.info(
             "ingest job retrying external_id=%s reason=%s attempt=%s delay=%.1f",
             external_id,
@@ -122,3 +128,8 @@ class IngestWorker:
             delay,
         )
         return IngestOutcome(external_id, catalog.JOB_RETRY_WAIT, failure.reason, job_settled=True)
+
+    def _defer_provider(self, job: ClaimedJob, delay: float) -> None:
+        provider = job.payload.get("provider")
+        if isinstance(provider, str) and provider:
+            self._jobs.defer_provider(provider, delay)
