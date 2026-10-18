@@ -150,7 +150,10 @@ publication paths.
 - `ready_assets` picks the latest `rights_evidence` row for the source record
   (`checked_at DESC, id DESC`) and keeps the asset when that row is
   `rights_type` CC0, `verification_status` VERIFIED, and `assets.status` is
-  READY. Browse, ranked search, related candidates, and asset detail all read
+  READY. Since revision 0009 it also requires that no other evidence row at the
+  same `checked_at` is anything but verified CC0. The `id DESC` tie-break is a
+  random UUID, so a tied rejection must not depend on which row sorts first.
+  Browse, ranked search, related candidates, and asset detail all read
   the view. `cc0_api` selects the view and has no privilege on `source_records`
   or `rights_evidence`. The view owner is the migration superuser
   (`security_invoker = false`).

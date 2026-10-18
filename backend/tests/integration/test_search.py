@@ -408,6 +408,53 @@ def test_a_newer_rejection_unpublishes_the_asset(ready_catalog: ReadyCatalog) ->
         assert all(item["id"] != harbor["id"] for item in related)
 
 
+def test_a_tied_rejection_hides_the_asset_whichever_row_sorts_first(
+    ready_catalog: ReadyCatalog,
+) -> None:
+    _publish(ready_catalog, [HARBOR, FIELD])
+    with TestClient(create_app(ready_catalog.settings)) as client:
+        listed = client.get("/api/v1/assets").json()["items"]
+        harbor = next(item for item in listed if item["title"] == "Harbor at Dawn")
+        field = next(item for item in listed if item["title"] == "Field in Late Summer")
+
+        # Bypass the repository, which would also suppress the asset: only the
+        # view stands between a tied rejection and a public READY row.
+        with psycopg.connect(ready_catalog.database.migration_url, autocommit=True) as connection:
+            connection.execute(
+                """
+                INSERT INTO rights_evidence (
+                    source_record_id, asset_id, rights_type, verification_status,
+                    verification_method, checked_at
+                )
+                SELECT evidence.source_record_id, evidence.asset_id, %s, %s, %s,
+                       evidence.checked_at
+                FROM rights_evidence AS evidence
+                JOIN assets ON assets.source_record_id = evidence.source_record_id
+                WHERE assets.id = %s
+                ORDER BY evidence.checked_at DESC
+                LIMIT 1
+                """,
+                (
+                    catalog.RIGHTS_REJECTED,
+                    catalog.VERIFICATION_REJECTED,
+                    catalog.METHOD_OPERATOR_REVIEW,
+                    UUID(harbor["id"]),
+                ),
+            )
+        assert (
+            ready_catalog.scalar(
+                "SELECT status FROM assets WHERE id = :asset_id", asset_id=UUID(harbor["id"])
+            )
+            == catalog.ASSET_READY
+        )
+
+        assert client.get(f"/api/v1/assets/{harbor['id']}").status_code == 404
+        titles = [item["title"] for item in client.get("/api/v1/assets").json()["items"]]
+        assert "Harbor at Dawn" not in titles
+        related = client.get(f"/api/v1/assets/{field['id']}/related").json()["items"]
+        assert all(item["id"] != harbor["id"] for item in related)
+
+
 def test_fake_vectors_do_not_satisfy_the_openclip_identity(ready_catalog: ReadyCatalog) -> None:
     _publish(ready_catalog, [HARBOR, FIELD])
     assert ready_catalog.embeddings.model_key == FAKE_MODEL_KEY

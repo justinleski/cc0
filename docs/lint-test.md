@@ -138,7 +138,8 @@ run means the stack really answered. They are the acceptance check through M2:
   and location filters hold, that a `STORED` asset is not in search, and that
   `cc0_api` can read `ready_assets` without reading `source_records`. The
   worker cannot `UPDATE` an embedding row. A newer rejection suppresses the
-  asset and removes it from search, detail, and related. Fake rows do not
+  asset and removes it from search, detail, and related. A rejection that ties
+  the verified row's `checked_at` hides an asset still marked READY. Fake rows do not
   satisfy an OpenCLIP `enqueue_missing`. An embed worker claims only its
   loaded checkpoint. A ranked cursor keeps its snapshot after the first hit is
   suppressed, and a cursor for another query or model is rejected.
