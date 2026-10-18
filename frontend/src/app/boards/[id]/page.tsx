@@ -7,6 +7,7 @@ import type { WorkDetail } from "@/api/catalog";
 import { CatalogImage } from "@/components/CatalogImage";
 import { useBoards } from "@/state/boards";
 import { BoardSignIn } from "@/components/BoardSignIn";
+import { BoardExport } from "@/components/BoardExport";
 
 function Pin({ boardId, assetId, notes, position, count, busy }: {
   boardId: string; assetId: string; notes: string; position: number; count: number; busy: boolean;
@@ -83,6 +84,7 @@ export default function BoardPage() {
         {board.items.length === 0 ? <p className="mt-5 text-muted">This board is empty. Browse the catalog and save a verified CC0 work.</p> : null}
         <ol className="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">{board.items.map((item, position) => <Pin key={item.asset_id} boardId={id} assetId={item.asset_id} notes={item.notes} position={position} count={board.items.length} busy={busy} />)}</ol>
       </section>
+      <BoardExport board={board} />
     </> : null}
   </main>;
 }
