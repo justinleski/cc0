@@ -333,6 +333,8 @@ class JobStore:
         """
         if kind == catalog.JOB_KIND_EMBED:
             return self._reap_embed()
+        if kind == catalog.JOB_KIND_EXPORT:
+            return self._reap_dead_only(kind)
         with self._engine.begin() as connection:
             settled = {
                 "kind": kind,
@@ -369,6 +371,33 @@ class JobStore:
                     """
                 ),
                 {**settled, "dead": catalog.JOB_DEAD, "reason": "attempts_exhausted"},
+            )
+        return result.rowcount
+
+    def _reap_dead_only(self, kind: str) -> int:
+        """An export job has no external proof of completion: publishing settles it
+        in the same transaction, so an unclaimable row never finished."""
+        with self._engine.begin() as connection:
+            result = connection.execute(
+                text(
+                    f"""
+                    UPDATE jobs SET
+                        state = :dead,
+                        dead_at = now(),
+                        leased_until = NULL,
+                        claim_token = NULL,
+                        last_error = COALESCE(last_error, :reason),
+                        updated_at = now()
+                    WHERE {_UNCLAIMABLE}
+                    """
+                ),
+                {
+                    "kind": kind,
+                    "leased": catalog.JOB_LEASED,
+                    "retry_wait": catalog.JOB_RETRY_WAIT,
+                    "dead": catalog.JOB_DEAD,
+                    "reason": "attempts_exhausted",
+                },
             )
         return result.rowcount
 

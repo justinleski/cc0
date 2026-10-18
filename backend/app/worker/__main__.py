@@ -1,7 +1,9 @@
 """Operator entry point: `python -m app.worker <command>`.
 
     ingest   discover (or take explicit ids), queue what is due, run ingest then embed
-    drain    run already queued ingest jobs, then embed jobs
+    drain    run already queued ingest jobs, then embed jobs, then board exports
+    exports  run queued board export jobs only
+    exports-cleanup  retire expired or rights-withdrawn archives and sweep orphans
     reembed  queue assets missing the active checkpoint and run those jobs
     jobs     list jobs in one state, which is how dead letters are inspected
     redrive  return a dead job to pending and reset its attempts
@@ -40,6 +42,11 @@ def _parser() -> argparse.ArgumentParser:
 
     drain = commands.add_parser("drain", help="run queued jobs")
     drain.add_argument("--max-jobs", type=int, default=None)
+
+    exports = commands.add_parser("exports", help="run queued board exports")
+    exports.add_argument("--max-jobs", type=int, default=None)
+
+    commands.add_parser("exports-cleanup", help="retire expired export archives")
 
     commands.add_parser("reembed", help="queue and run missing embeddings for the active model")
 
@@ -90,6 +97,18 @@ def _run_embed(runtime: WorkerRuntime, max_jobs: int | None) -> int:
     return code
 
 
+def _run_exports(runtime: WorkerRuntime, max_jobs: int | None) -> int:
+    outcomes = runtime.export_worker.drain(max_jobs)
+    for outcome in outcomes:
+        logger.info(
+            "export export_id=%s result=%s detail=%s",
+            outcome.export_id,
+            outcome.result,
+            outcome.detail,
+        )
+    return 1 if any(outcome.result == "failed" for outcome in outcomes) else 0
+
+
 def _dispatch(args: argparse.Namespace, runtime: WorkerRuntime) -> int:
     service = runtime.service
     if args.command == "ingest":
@@ -101,7 +120,15 @@ def _dispatch(args: argparse.Namespace, runtime: WorkerRuntime) -> int:
 
     if args.command == "drain":
         ingest_code = _report(runtime.ingest_worker.drain(args.max_jobs))
-        return max(ingest_code, _run_embed(runtime, args.max_jobs))
+        embed_code = max(ingest_code, _run_embed(runtime, args.max_jobs))
+        return max(embed_code, _run_exports(runtime, args.max_jobs))
+
+    if args.command == "exports":
+        return _run_exports(runtime, args.max_jobs)
+
+    if args.command == "exports-cleanup":
+        logger.info("exports-cleanup %s", runtime.export_service.cleanup())
+        return 0
 
     if args.command == "reembed":
         queued = runtime.embed_service.enqueue_missing()
