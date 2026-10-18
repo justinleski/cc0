@@ -24,6 +24,8 @@ evolve.
 - [AWS deployment](aws-deployment.md) — not implemented; pilot spec pointers.
 - [M2 engineering handoff](m2-handoff.md) — pooling, catalog grants, and the
   embedding grants are implemented. Users and boards grants are implemented; exports remain future work.
+- [Reproducing M4](m4-reproduction.md) — recommendations, exports, and the one-command journey.
+- [M4 checklist](m4-checklist.md) — branch layout and what is verified.
 - [Lint and tests](lint-test.md)
   The individual commands behind `./scripts/check.sh`.
 

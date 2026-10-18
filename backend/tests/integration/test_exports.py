@@ -421,3 +421,19 @@ def test_api_role_privileges_are_limited(ready_catalog: ReadyCatalog) -> None:
         for statement in ("SELECT * FROM boards", "DELETE FROM board_exports"):
             with pytest.raises(errors.InsufficientPrivilege):
                 worker.execute(statement)
+
+
+def test_concurrent_workers_publish_one_archive(harness: Harness) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    board_id, _ = harness.board()
+    export_id = harness.request(board_id).json()["id"]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        batches = list(pool.map(lambda _: harness.worker.drain(), range(4)))
+    results = [outcome.result for batch in batches for outcome in batch]
+    assert results == ["published"]
+    assert harness.status(export_id).json()["status"] == "READY"
+    assert len(harness.keys()) == 1
+    assert harness.ready.scalar(
+        "SELECT state FROM jobs WHERE dedupe_key = :key", key=f"export:{export_id}"
+    ) == "succeeded"

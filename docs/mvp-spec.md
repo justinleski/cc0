@@ -378,6 +378,18 @@ MVP logs should be structured and include request/job/correlation IDs. Track `as
 - Basic normalized board centroid, **More Like This Board** and **Complement This Board** ranking, candidate deduplication/diversification, background ZIP exports, full provenance manifest, failure/retry tests, E2E script, evaluation benchmark and README for local reproduction.
 - **Accept when:** adding/removing pins changes authorized board recommendations; candidate list contains only verified CC0 assets and never repeats saved pins; recommendations can be compared with a single-pin similarity baseline; user exports only approved selected assets, source evidence remains attached, and repeated/failed jobs do not corrupt state.
 
+**M4 status (2026-10-18)** — only criteria with passing evidence are listed as met;
+see [reproducing M4](m4-reproduction.md) and the [checklist](m4-checklist.md).
+
+| Criterion | Status | Evidence |
+| --- | --- | --- |
+| Exports contain only approved, selected assets; source and rights evidence stay attached | Met | `test_exports.py` (contents vs. catalog, manifest/CSV/hash checks), `scripts/m4_e2e.py` |
+| Repeated, failed, interrupted, and duplicate export jobs do not corrupt state | Met | `test_exports.py` (retry, attempt exhaustion and redrive, upload interruption, stale claim, concurrent workers) |
+| Rights suppression during packaging and before download is honoured | Met | `test_exports.py` (before packaging, during packaging, after publish) |
+| Exports and recommendations are owner-scoped | Met | `test_exports.py`, `test_m4_e2e.py`, role-privilege tests |
+| Export UI: progress, download, failure and retry states | Met at component level | `frontend/tests/board-export.test.tsx`; not exercised in a real browser |
+| Pin changes change authorized recommendations; candidates are verified CC0 and never repeat pins; single-pin baseline comparison | Pending merge | Implemented and passing on `feat/recommendation-algo`; verified together with exports in a combined checkout, but not yet on `milestone/m4` |
+
 ### Milestone M5 — AWS pilot (only when requested)
 
 - IaC/deployment scripts, EC2 instance role, private S3/CloudFront, Cognito, HTTPS, backups, alerts, smoke tests on 50 images.
