@@ -89,7 +89,20 @@ ASSET_HAS_BYTES = (ASSET_STORED, ASSET_READY, ASSET_SUPPRESSED)
 
 JOB_KIND_INGEST = "ingest"
 JOB_KIND_EMBED = "embed"
-JOB_KINDS = (JOB_KIND_INGEST, JOB_KIND_EMBED)
+JOB_KIND_EXPORT = "export"
+JOB_KINDS = (JOB_KIND_INGEST, JOB_KIND_EMBED, JOB_KIND_EXPORT)
+
+# Board export lifecycle. The job row owns retries; the export row owns what the
+# owner sees. READY means a complete archive is stored and was eligible when it
+# was published. EXPIRED means the archive was retired by the retention window.
+EXPORT_QUEUED = "QUEUED"
+EXPORT_READY = "READY"
+EXPORT_FAILED = "FAILED"
+EXPORT_EXPIRED = "EXPIRED"
+EXPORT_STATUSES = (EXPORT_QUEUED, EXPORT_READY, EXPORT_FAILED, EXPORT_EXPIRED)
+EXPORTS_TABLE = "board_exports"
+EXPORT_ITEMS_TABLE = "board_export_items"
+EXPORT_PREFIX = "exports"
 
 # The public projection. cc0_api selects this and has no privilege on
 # source_records or rights_evidence. The view keeps a READY asset whose latest

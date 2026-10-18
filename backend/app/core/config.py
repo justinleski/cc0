@@ -219,6 +219,15 @@ class Settings(BaseSettings):
     object_store_region: str = "us-east-1"
     readiness_timeout_seconds: float = Field(default=2.0, gt=0)
 
+    # Board exports. Archives live under a private prefix; the download URL is a
+    # short-lived presigned GET minted only after the owner and rights recheck.
+    object_store_public_endpoint: str = ""
+    export_ttl_hours: int = Field(default=24, gt=0)
+    export_download_url_seconds: int = Field(default=60, gt=0, le=3600)
+    export_max_assets: int = Field(default=200, gt=0)
+    export_max_active_per_owner: int = Field(default=3, gt=0)
+    export_orphan_grace_hours: int = Field(default=2, gt=0)
+
     # Ingestion. Protective limits, not provider claims: the defaults are the
     # pilot values from the spec and an operator may only lower them safely.
     # `fixture` replays recorded responses and opens no socket, which is why
