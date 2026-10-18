@@ -33,9 +33,10 @@ so a user who edited the board always gets a fresh snapshot.
 1. **Request.** One API transaction locks the board row (the lock every board
    mutation takes), snapshots the pins that are `READY` with verified CC0
    evidence into `board_export_items`, inserts the `board_exports` row, and
-   inserts the `jobs` row (`kind = export`, `dedupe_key = export:<id>`). A
-   committed export therefore always has a job. The API role gets a
-   column-limited `INSERT` on `jobs` for this and nothing else on that table.
+   creates the `jobs` row (`kind = export`, `dedupe_key = export:<id>`). A
+   committed export therefore always has a job. The API role has no privilege
+   on `jobs`; it may only `EXECUTE` the `cc0_enqueue_export_job` SECURITY
+   DEFINER function, which inserts the single job a `QUEUED` export needs.
 2. **Claim.** `python -m app.worker exports` (also run by `drain`) claims one job
    with the normal lease, claim token, and attempt counting. A `LeaseKeeper`
    renews the lease while packaging.

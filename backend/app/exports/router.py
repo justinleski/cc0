@@ -48,7 +48,9 @@ def service(request: Request) -> Iterator[ExportService]:
     state = request.app.state
     # Signing is local, but the signature binds the host the browser will call.
     public = state.settings.object_store_public_endpoint
-    client = create_s3_client(state.settings, endpoint=public) if public else state.s3_client
+    if public and not hasattr(state, "export_url_client"):
+        state.export_url_client = create_s3_client(state.settings, endpoint=public)
+    client = state.export_url_client if public else state.s3_client
     try:
         yield ExportService(
             ExportRepository(state.db_engine),
@@ -63,9 +65,6 @@ def service(request: Request) -> Iterator[ExportService]:
         raise HTTPException(400, str(exc)) from exc
     except ExportLimitReached as exc:
         raise HTTPException(429, str(exc)) from exc
-    finally:
-        if public:
-            client.close()
 
 
 Exports = Annotated[ExportService, Depends(service)]
