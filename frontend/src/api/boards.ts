@@ -1,6 +1,18 @@
+import type { AssetCard } from "./catalog";
+
 export type BoardSummary = { id: string; name: string; description: string; created_at: string; updated_at: string };
 export type BoardItem = { asset_id: string; position: number; notes: string };
 export type BoardDetail = BoardSummary & { items: BoardItem[] };
+export type RecommendationMode = "cohesive" | "complement";
+export type BoardRecommendations = {
+  mode: RecommendationMode;
+  strategy: string;
+  fallback: "browse" | null;
+  profile_pin_count: number;
+  ignored_pin_count: number;
+  board_version: string;
+  items: (AssetCard & { score: number | null; reasons: string[]; closest_pin_id: string | null })[];
+};
 
 export class BoardApiError extends Error {
   constructor(public status: number, detail?: string) {
@@ -13,7 +25,17 @@ export class BoardApiError extends Error {
   }
 }
 
-async function request<T>(token: string, path: string, method = "GET", body?: object, idempotencyKey?: string): Promise<T> {
+// The caller's signal cancels a superseded read; the timeout still applies.
+function withTimeout(signal?: AbortSignal): AbortSignal {
+  if (!signal) return AbortSignal.timeout(30000);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  const stop = () => { clearTimeout(timer); controller.abort(); };
+  if (signal.aborted) stop(); else signal.addEventListener("abort", stop, { once: true });
+  return controller.signal;
+}
+
+async function request<T>(token: string, path: string, method = "GET", body?: object, idempotencyKey?: string, signal?: AbortSignal): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`/api/boards${path}`, {
@@ -22,7 +44,7 @@ async function request<T>(token: string, path: string, method = "GET", body?: ob
         ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}) },
       body: body ? JSON.stringify(body) : undefined,
       cache: "no-store",
-      signal: AbortSignal.timeout(30000),
+      signal: withTimeout(signal),
     });
   } catch {
     throw new BoardApiError(503);
@@ -50,3 +72,5 @@ export const addPin = (token: string, id: string, assetId: string) => request<Bo
 export const removePin = (token: string, id: string, assetId: string) => request<BoardDetail>(token, `/${encodeURIComponent(id)}/items/${encodeURIComponent(assetId)}`, "DELETE");
 export const reorderPins = (token: string, id: string, assetIds: string[]) => request<BoardDetail>(token, `/${encodeURIComponent(id)}/items/order`, "PUT", { asset_ids: assetIds });
 export const editPinNotes = (token: string, id: string, assetId: string, notes: string) => request<BoardDetail>(token, `/${encodeURIComponent(id)}/items/${encodeURIComponent(assetId)}`, "PATCH", { notes });
+export const getRecommendations = (token: string, id: string, mode: RecommendationMode, signal?: AbortSignal) =>
+  request<BoardRecommendations>(token, `/${encodeURIComponent(id)}/recommendations?${new URLSearchParams({ mode, limit: "20" })}`, "GET", undefined, undefined, signal);

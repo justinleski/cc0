@@ -23,6 +23,7 @@ type BoardContextValue = {
   toggleSave: (id: string, assetId: string) => Promise<boolean>;
   moveItem: (id: string, assetId: string, direction: -1 | 1) => Promise<boolean>;
   saveNotes: (id: string, assetId: string, notes: string) => Promise<boolean>;
+  recommend: (id: string, mode: api.RecommendationMode, signal: AbortSignal) => Promise<api.BoardRecommendations>;
   clearError: () => void;
 };
 const BoardContext = createContext<BoardContextValue | null>(null);
@@ -197,6 +198,14 @@ export function BoardProvider({ children }: { children: ReactNode }) {
       return (await mutate(id, (token) => api.reorderPins(token, id, ids))).ok;
     },
     saveNotes: async (id, assetId, notes) => (await mutate(id, (token) => api.editPinNotes(token, id, assetId, notes))).ok,
+    recommend: async (id, mode, signal) => {
+      const current = generation.current;
+      try { return await api.getRecommendations(tokenRef.current, id, mode, signal); }
+      catch (cause) {
+        if (generation.current === current && cause instanceof api.BoardApiError && cause.status === 401) { reset(); setError(cause.message); }
+        throw cause;
+      }
+    },
     clearError: () => setError(null),
   }}>{children}</BoardContext.Provider>;
 }

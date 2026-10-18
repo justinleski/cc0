@@ -60,6 +60,7 @@ CONFIG_ENV_PREFIXES = (
     "RUSTFS_",
     "S3_",
     "API_",
+    "RECOMMENDER_",
 )
 
 _DUMMY_SECRETS = frozenset(
@@ -258,6 +259,11 @@ class Settings(BaseSettings):
     model_version: str = "unpinned"
     model_dimensions: int = 512
     embedding_cache_dir: str = "backend/.cache/embeddings"
+
+    # Board recommendation strategies by mode. Names must be registered in
+    # app.recommendations.strategy.STRATEGIES; create_app rejects others.
+    recommender_cohesive_strategy: str = "centroid-cosine"
+    recommender_complement_strategy: str = "complement-baseline-v0"
 
     @property
     def fixture_dir(self) -> Path:

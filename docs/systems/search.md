@@ -153,8 +153,8 @@ publication paths.
   READY. Since revision 0009 it also requires that no other evidence row at the
   same `checked_at` is anything but verified CC0. The `id DESC` tie-break is a
   random UUID, so a tied rejection must not depend on which row sorts first.
-  Browse, ranked search, related candidates, and asset detail all read
-  the view. `cc0_api` selects the view and has no privilege on `source_records`
+  Browse, ranked search, related candidates, asset detail, and
+  [board recommendations](recommendations.md) all read the view. `cc0_api` selects the view and has no privilege on `source_records`
   or `rights_evidence`. The view owner is the migration superuser
   (`security_invoker = false`).
 - A newer evidence row that is not verified CC0 is written by

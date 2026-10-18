@@ -391,7 +391,7 @@ MVP logs should be structured and include request/job/correlation IDs. Track `as
 | F1 | SQS + separate independently scaled workers | Large batch processing blocks queries or jobs require horizontal scaling |
 | F1 | RDS PostgreSQL and private VPC | Managed backups/uptime outweigh added fixed costs; EC2 DB is operational burden |
 | F1 | Richer visual relation inference (subject-predicate-object) | User testing shows compositional searches are weak |
-| F1 | Multi-cluster board embeddings and visual role suggestions | Board centroid fails on mixed aesthetics or users want specific complementary roles |
+| F1 | Multi-cluster board embeddings and visual role suggestions | Board centroid fails on mixed aesthetics or users want specific complementary roles. Per-pin and clustered retrieval now exist as evaluation-only experiments ([recommendations](systems/recommendations.md)); none is a default until benchmarks and human judgments support it. |
 | F1 | Human curator verification dashboard | Evidence review becomes a bottleneck |
 | F2 | OpenSearch / separate vector index | Proven SQL/vector performance bottleneck at larger corpus |
 | F2 | Personalized related images and collaborative signals | Enough user behavior data exists to evaluate them responsibly |
