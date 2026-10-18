@@ -13,13 +13,14 @@ For the complete container stack, provision a private cursor key once, then star
 ```bash
 cp -n .env.example .env
 grep -q '^CURSOR_SIGNING_KEY=' .env || printf 'CURSOR_SIGNING_KEY=%s\n' "$(openssl rand -hex 32)" >> .env
-docker compose up --build -d
+./scripts/start.sh
 ```
 
 This builds the API and Next.js images, starts PostgreSQL and RustFS, creates the
 local bucket, applies migrations, and starts the API and frontend in that order.
-Open http://127.0.0.1:3000; API readiness is at
-http://127.0.0.1:8000/api/v1/ready. Copy
+The script prints the app, Swagger API docs, readiness endpoint, RustFS console,
+and useful Compose commands after startup. Open http://127.0.0.1:3000; API
+readiness is at http://127.0.0.1:8000/api/v1/ready. Copy
 `.env.example` to `.env` and edit it to enable local authentication or change
 local settings. Keep the generated key private and stable across API restarts.
 To run worker or token commands with the same backend image:
