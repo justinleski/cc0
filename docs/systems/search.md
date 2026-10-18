@@ -195,7 +195,8 @@ publication paths.
 `GET /api/v1/assets/{id}` reads `ready_assets`. A `STORED` asset, a
 `SUPPRESSED` asset, and a `READY` asset whose latest evidence is not verified
 CC0 are 404.
-`GET /api/v1/assets/{id}/related` is exact cosine order of the active model
+`GET /api/v1/assets/{id}/related` is exact cosine order of the selected stored
+image model
 among other rows of that same view, excluding the seed. `reasons` may include
 `same_creator`, `same_location`, and `same_style_tag`. There is no HNSW index
 and no `asset_relations` table.
@@ -255,10 +256,18 @@ Rebuild with the worker on the new checkpoint while `MODEL_KEY` and
 ```
 
 Confirm coverage: every asset that passes the `ready_assets` predicate has a
-row in `asset_embeddings` for that identity. Then start the API so its process
-loads the same identity. Environment config alone leaves a running API on the
-identity it already loaded. Old rows stay, so starting the API on the previous
-identity is the rollback.
+row in `asset_embeddings` for that identity. For related images and board
+recommendations, set both `CATALOG_EMBEDDING_MODEL_KEY` and
+`CATALOG_EMBEDDING_MODEL_VERSION` on the API to select those persisted vectors.
+These routes execute pgvector queries and do not load OpenCLIP or embed images
+at request time. If unset, they use the API inference provider's identity for
+backward compatibility. Restart the API after changing the environment.
+
+Unquoted natural-language search is different: it embeds the new text query at
+request time. To use OpenCLIP semantic text search, the API still needs the
+OpenCLIP extra, `EMBEDDING_PROVIDER=openclip`, and matching `MODEL_KEY` /
+`MODEL_VERSION`. Its text-query model must match the stored image vectors.
+Old vector rows stay, so switching the selector back is reversible.
 
 ## Operator commands
 

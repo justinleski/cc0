@@ -64,11 +64,23 @@ class AssetMediaService:
 
 class SearchService:
     def __init__(
-        self, repository: SearchRepository, embeddings: EmbeddingProvider, cursor_key: bytes
+        self,
+        repository: SearchRepository,
+        embeddings: EmbeddingProvider,
+        cursor_key: bytes,
+        *,
+        related_model_key: str | None = None,
+        related_model_version: str | None = None,
     ) -> None:
         self._repository = repository
         self._embeddings = embeddings
         self._cursor_key = cursor_key
+        self._related_model_key = (
+            embeddings.model_key if related_model_key is None else related_model_key
+        )
+        self._related_model_version = (
+            embeddings.model_version if related_model_version is None else related_model_version
+        )
 
     def search(
         self,
@@ -103,8 +115,8 @@ class SearchService:
         return self._repository.related(
             asset_id,
             limit,
-            self._embeddings.model_key,
-            self._embeddings.model_version,
+            self._related_model_key,
+            self._related_model_version,
         )
 
     def creators(self, query: str | None, limit: int) -> CreatorPage:

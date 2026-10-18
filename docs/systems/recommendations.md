@@ -11,6 +11,11 @@ Recommendations are built in-house on the stored OpenCLIP vectors in pgvector.
 There is no separate recommender service or store. A board's profile is
 recomputed on every request from its current pins, so adding or removing a pin
 changes the next response without a cache to invalidate.
+The API selects the stored vector identity with
+`CATALOG_EMBEDDING_MODEL_KEY` and `CATALOG_EMBEDDING_MODEL_VERSION`; if unset,
+it uses the inference provider's identity. Recommendation requests only read
+stored vectors and run pgvector queries. They do not load or run OpenCLIP in
+the API process.
 
 ## Route
 

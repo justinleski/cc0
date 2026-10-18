@@ -45,6 +45,9 @@ class RecommendationResponseModel(BaseModel):
 def _service(request: Request) -> RecommendationService:
     settings = request.app.state.settings
     embeddings = request.app.state.embeddings
+    model_key, model_version = settings.catalog_embedding_identity(
+        embeddings.model_key, embeddings.model_version
+    )
     engine = request.app.state.db_engine
     search = SearchRepository(engine)
     return RecommendationService(
@@ -54,8 +57,8 @@ def _service(request: Request) -> RecommendationService:
             "cohesive": configured(settings.recommender_cohesive_strategy),
             "complement": configured(settings.recommender_complement_strategy),
         },
-        embeddings.model_key,
-        embeddings.model_version,
+        model_key,
+        model_version,
     )
 
 
