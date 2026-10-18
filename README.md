@@ -81,3 +81,5 @@ and the [frontend walkthrough](frontend/README.md).
 
 See the [documentation index](docs/README.md), [local development guide](docs/local-development.md),
 [test commands](docs/lint-test.md), and [MVP spec](docs/mvp-spec.md).
+The [Met evaluation catalog](docs/met-evaluation-catalog.md) documents the
+versioned 1,000-image dataset and its local reproduction commands.

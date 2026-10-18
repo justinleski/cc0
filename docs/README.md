@@ -21,6 +21,8 @@ evolve.
 - [Local development](local-development.md)
   Container and host startup, shared environment, and database concepts.
 - [Evaluation](evaluation.md) — recommendation evaluation and benchmarks.
+- [Met evaluation catalog](met-evaluation-catalog.md) — versioned 1,000-image
+  dataset, local reproduction, rights audit, and measured distribution.
 - [AWS deployment](aws-deployment.md) — not implemented; pilot spec pointers.
 - [M2 engineering handoff](m2-handoff.md) — pooling, catalog grants, and the
   embedding grants are implemented. Users and boards grants are implemented; exports remain future work.

@@ -1,0 +1,80 @@
+{
+  "endpoint": "https://collectionapi.metmuseum.org/public/collection/v1.1/search",
+  "excluded_fixture_ids": [
+    "100001",
+    "100002",
+    "100003",
+    "100004",
+    "100005",
+    "100006",
+    "100007",
+    "100008",
+    "100009",
+    "100010"
+  ],
+  "checkpoint_sha256": "ac4f8c4b88af6d963118cbf40ad93176d092abbedfcb752601ae1866352656e6",
+  "model_key": "ViT-B-32",
+  "model_version": "laion2b_s34b_b79k",
+  "ordering": "sha256(met-1k-v1:category:query:source_id)",
+  "queries": {
+    "animals": [
+      "bird",
+      "horse",
+      "dog",
+      "cat",
+      "animal"
+    ],
+    "architecture_interiors": [
+      "architecture",
+      "building",
+      "interior",
+      "temple",
+      "cathedral"
+    ],
+    "landscapes_seascapes": [
+      "landscape",
+      "seascape",
+      "mountain",
+      "river",
+      "garden"
+    ],
+    "patterns_designs": [
+      "pattern",
+      "ornament",
+      "geometric",
+      "abstract",
+      "design"
+    ],
+    "portraits_figures": [
+      "portrait",
+      "figure",
+      "woman",
+      "man",
+      "child"
+    ],
+    "sculpture_objects": [
+      "sculpture",
+      "ceramic",
+      "vessel",
+      "furniture",
+      "jewelry"
+    ],
+    "still_lifes_botanicals": [
+      "still life",
+      "flower",
+      "fruit",
+      "botanical",
+      "bouquet"
+    ],
+    "textiles_garments": [
+      "textile",
+      "garment",
+      "dress",
+      "robe",
+      "fabric"
+    ]
+  },
+  "manifest_recorded_at": "2026-10-18T17:32:31.014903+00:00",
+  "source": "The Metropolitan Museum of Art Collection API",
+  "version": 1
+}
