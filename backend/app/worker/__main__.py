@@ -19,6 +19,7 @@ from app.core.logging import configure_logging
 from app.db import catalog
 from app.embeddings.models import EmbedOutcome
 from app.ingestion.models import IngestOutcome
+from app.worker.recovery import follow_ingest
 from app.worker.runtime import WorkerRuntime, build_runtime
 
 logger = logging.getLogger("cc0.worker")
@@ -31,6 +32,9 @@ def _parser() -> argparse.ArgumentParser:
     ingest = commands.add_parser("ingest", help="discover, queue, and run")
     ingest.add_argument("--limit", type=int, default=None, help="records to discover")
     ingest.add_argument(
+        "--follow", action="store_true", help="wait for and resume scheduled retries"
+    )
+    ingest.add_argument(
         "--object-id",
         action="append",
         default=[],
@@ -40,6 +44,9 @@ def _parser() -> argparse.ArgumentParser:
 
     drain = commands.add_parser("drain", help="run queued jobs")
     drain.add_argument("--max-jobs", type=int, default=None)
+    drain.add_argument(
+        "--follow", action="store_true", help="wait for and resume scheduled retries"
+    )
 
     commands.add_parser("reembed", help="queue and run missing embeddings for the active model")
 
@@ -96,11 +103,21 @@ def _dispatch(args: argparse.Namespace, runtime: WorkerRuntime) -> int:
         external_ids = args.object_ids or service.discover(args.limit)
         for external_id, reason in service.enqueue(list(external_ids)).items():
             logger.info("skipped external_id=%s reason=%s", external_id, reason)
-        ingest_code = _report(runtime.ingest_worker.drain())
+        outcomes = (
+            follow_ingest(runtime.ingest_worker, runtime.job_store)
+            if args.follow
+            else runtime.ingest_worker.drain()
+        )
+        ingest_code = _report(outcomes)
         return max(ingest_code, _run_embed(runtime, None))
 
     if args.command == "drain":
-        ingest_code = _report(runtime.ingest_worker.drain(args.max_jobs))
+        outcomes = (
+            follow_ingest(runtime.ingest_worker, runtime.job_store, max_jobs=args.max_jobs)
+            if args.follow
+            else runtime.ingest_worker.drain(args.max_jobs)
+        )
+        ingest_code = _report(outcomes)
         return max(ingest_code, _run_embed(runtime, args.max_jobs))
 
     if args.command == "reembed":
