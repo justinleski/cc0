@@ -44,7 +44,9 @@ Only tick an item once it is implemented **and** verified. See
 
 ## Phase 4 — Docs and review
 - [x] mvp-spec status, export system doc, docs index, repro instructions
-- [ ] evaluation.md results: owned by the recommendation branch; reproducibility re-run pending
+- [ ] evaluation.md results: owned by the recommendation branch. Re-run check done: two consecutive
+      `python -m app.recommendations.evaluate` runs on the local catalog wrote byte-identical results
+      files (sha256 `6dbf3397…`). Published numbers there were not regenerated here.
 - [x] Review pass and fixes (enqueue hardened; see git log)
 
 ## Merge recipe for `feat/recommendation-algo`
@@ -56,3 +58,11 @@ Conflicts are additive. Keep both sides in `backend/app/main.py` (routers),
 this branch's `exports`, `exports-cleanup`, and export drain to `drain`. Repoint
 `0010_board_exports.down_revision` to `0009_ready_assets_fail_closed` and confirm
 `alembic heads` shows one head.
+
+## Verification log (combined tree: M4 branches + uncommitted recommendation engine, 2026-10-18)
+
+- Backend: `ruff check` clean; 259 unit tests; 69 integration tests (includes `test_exports.py`,
+  `test_m4_e2e.py`, migration upgrade/downgrade); `alembic heads` shows one head.
+- Frontend (Node 22): `tsc --noEmit`, `eslint .`, 39 vitest tests.
+- `backend/scripts/m4_e2e.py`: 15 checks passed against real Postgres, RustFS, API and worker processes.
+- Not done: real-browser (Playwright) run of the export UI; compose worker service (the worker is run by hand).
