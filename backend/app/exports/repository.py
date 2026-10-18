@@ -1,6 +1,5 @@
 """Owner-scoped export transactions for the API role."""
 
-import json
 from typing import Any
 from uuid import UUID
 
@@ -73,11 +72,7 @@ class ExportRepository:
             )
             connection.execute(
                 text(queries.INSERT_JOB),
-                {
-                    "dedupe_key": f"export:{created.id}",
-                    "payload": json.dumps({"export_id": str(created.id)}),
-                    "max_attempts": max_attempts,
-                },
+                {"export_id": created.id, "max_attempts": max_attempts},
             )
         return _export(created)
 
