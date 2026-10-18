@@ -32,16 +32,27 @@ Only tick an item once it is implemented **and** verified. See
 - [x] Lifecycle (expiry, cleanup) documented
 
 ## Phase 2 — Frontend
-- [ ] Both recommendation modes on board page
-- [ ] Loading / empty / error / retry; stale-response guard
-- [ ] Export action, progress, download, failure retry
+- [ ] Both recommendation modes on board page (built on `feat/recommendation-algo`, not mine; pending merge)
+- [ ] Loading / empty / error / retry; stale-response guard (recommendations: pending merge; export: done, component tests)
+- [x] Export action, progress, download, failure retry
 
 ## Phase 3 — Acceptance
-- [ ] Authorization and cross-user tests
-- [ ] Export retry/failure/rights tests; manifest vs. archive verification
-- [ ] E2E script
-- [ ] Lint, typecheck, unit/integration, migration checks
+- [x] Authorization and cross-user tests
+- [x] Export retry/failure/rights tests; manifest vs. archive verification
+- [x] E2E script (`backend/scripts/m4_e2e.py`, `test_m4_e2e.py`; green in a combined checkout, skipped without the rec engine)
+- [x] Lint, typecheck, unit/integration, migration checks (per branch and combined)
 
 ## Phase 4 — Docs and review
-- [ ] mvp-spec, evaluation, export system doc, docs index, repro instructions
-- [ ] Review pass and fixes
+- [x] mvp-spec status, export system doc, docs index, repro instructions
+- [ ] evaluation.md results: owned by the recommendation branch; reproducibility re-run pending
+- [x] Review pass and fixes (enqueue hardened; see git log)
+
+## Merge recipe for `feat/recommendation-algo`
+
+Conflicts are additive. Keep both sides in `backend/app/main.py` (routers),
+`frontend/src/state/boards.tsx` (`getToken` and `recommend`), the board page
+(`BoardRecommendations` and `BoardExport`), and `docs/README.md`. In
+`backend/app/worker/__main__.py` keep that branch's `--follow` handling and add
+this branch's `exports`, `exports-cleanup`, and export drain to `drain`. Repoint
+`0010_board_exports.down_revision` to `0009_ready_assets_fail_closed` and confirm
+`alembic heads` shows one head.
