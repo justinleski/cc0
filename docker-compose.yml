@@ -15,6 +15,9 @@ x-backend: &backend
     DATABASE_URL: postgresql://cc0_api:${CC0_API_PASSWORD:-cc0_api_local_password}@postgres:5432/${POSTGRES_DB:-cc0}
     WORKER_DATABASE_URL: postgresql://cc0_worker:${CC0_WORKER_PASSWORD:-cc0_worker_local_password}@postgres:5432/${POSTGRES_DB:-cc0}
     OBJECT_STORE_ENDPOINT: http://rustfs:9000
+    # Export download links are presigned for the host the browser reaches,
+    # not the compose-internal rustfs name.
+    OBJECT_STORE_PUBLIC_ENDPOINT: http://127.0.0.1:${RUSTFS_API_PORT:-9000}
 
 services:
   postgres:
