@@ -20,6 +20,8 @@ from app.db.engine import create_worker_engine
 from app.embeddings.provider import EmbeddingProvider, build_provider
 from app.embeddings.repository import EmbeddingRepository
 from app.embeddings.service import EmbedService
+from app.exports.package_service import PackageService
+from app.exports.worker_repository import ExportWorkerRepository
 from app.ingestion.fetch import HttpImageFetcher, HttpJsonSource, Pacer
 from app.ingestion.fixtures import FixtureSource
 from app.ingestion.met import MetAdapter
@@ -27,6 +29,7 @@ from app.ingestion.repository import IngestionRepository
 from app.ingestion.service import IngestService
 from app.integrations.object_store import ObjectStore, create_s3_client
 from app.worker.embed import EmbedWorker
+from app.worker.export import ExportWorker
 from app.worker.ingest import IngestWorker
 from app.worker.jobs import JobStore
 
@@ -39,6 +42,8 @@ class WorkerRuntime:
     embed_service: EmbedService
     ingest_worker: IngestWorker
     embed_worker: EmbedWorker
+    export_worker: ExportWorker
+    export_service: PackageService
     embeddings: EmbeddingProvider
     job_store: JobStore
     # The recorded-fixture source in fixture mode, which also carries the
@@ -105,6 +110,11 @@ def build_runtime(settings: Settings) -> WorkerRuntime:
         repository=embedding_repository,
         job_store=job_store,
     )
+    export_service = PackageService(
+        settings=settings,
+        repository=ExportWorkerRepository(engine),
+        object_store=object_store,
+    )
     return WorkerRuntime(
         settings=settings,
         engine=engine,
@@ -112,6 +122,10 @@ def build_runtime(settings: Settings) -> WorkerRuntime:
         embed_service=embed_service,
         ingest_worker=IngestWorker(settings=settings, job_store=job_store, service=service),
         embed_worker=EmbedWorker(settings=settings, job_store=job_store, service=embed_service),
+        export_service=export_service,
+        export_worker=ExportWorker(
+            settings=settings, job_store=job_store, service=export_service
+        ),
         embeddings=embeddings,
         job_store=job_store,
         source=source,

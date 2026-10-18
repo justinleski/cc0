@@ -18,15 +18,18 @@ Only tick an item once it is implemented **and** verified. See
 
 ## Dependencies
 
+- Migration `0010_board_exports` currently revises `0008`; when the recommendation
+  migration `0009` lands, repoint `down_revision` and rerun `tests/integration/test_migration.py`.
+
 - Recommendation engine (`feat/recommendation-algo`) is uncommitted at the time of
   writing. Frontend integration and recommendation acceptance tests wait for it to land.
 
 ## Phase 1 — Exports
-- [ ] Schema + grants migration
-- [ ] Owner-scoped API (create/status/download)
-- [ ] Worker job: snapshot, rights recheck, ZIP, atomic publish
-- [ ] Retry / interruption / duplicate-execution safety
-- [ ] Lifecycle (expiry, cleanup) documented
+- [x] Schema + grants migration
+- [x] Owner-scoped API (create/status/download)
+- [x] Worker job: snapshot, rights recheck, ZIP, atomic publish
+- [x] Retry / interruption / duplicate-execution safety
+- [x] Lifecycle (expiry, cleanup) documented
 
 ## Phase 2 — Frontend
 - [ ] Both recommendation modes on board page

@@ -34,6 +34,8 @@ evolve.
 
 - [Private boards and local authentication](systems/boards.md)
   M3 slices 2 and 3: signed local tokens, owner-scoped board API, and persistent frontend workflows.
+- [Board exports](systems/exports.md)
+  M4: background ZIP exports, job lifecycle, retries, rights rechecks, and storage lifecycle.
 - [Storage](systems/storage.md)
   Postgres with pgvector, RustFS, migrations, database roles and catalog grants.
 - [API process](systems/api.md)
