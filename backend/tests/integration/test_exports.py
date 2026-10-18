@@ -407,12 +407,16 @@ def test_api_role_privileges_are_limited(ready_catalog: ReadyCatalog) -> None:
         for statement in (
             "SELECT * FROM jobs",
             "UPDATE jobs SET state = 'dead'",
+            "INSERT INTO jobs (kind, dedupe_key) VALUES ('ingest', 'forged')",
             "UPDATE board_exports SET status = 'READY'",
             "DELETE FROM board_exports",
             "SELECT * FROM rights_evidence",
         ):
             with pytest.raises(errors.InsufficientPrivilege):
                 api.execute(statement)
+        # The one sanctioned path creates no job unless a QUEUED export exists.
+        api.execute("SELECT cc0_enqueue_export_job(gen_random_uuid(), 3)")
+        assert ready_catalog.scalar("SELECT count(*) FROM jobs WHERE kind = 'export'") == 0
     with psycopg.connect(ready_catalog.database.worker_url, autocommit=True) as worker:
         for statement in ("SELECT * FROM boards", "DELETE FROM board_exports"):
             with pytest.raises(errors.InsufficientPrivilege):

@@ -28,10 +28,9 @@ FROM board_items item
 JOIN ready_assets asset ON asset.id = item.asset_id
 WHERE item.board_id = :board_id
 """
-INSERT_JOB = """
-INSERT INTO jobs (kind, dedupe_key, payload, max_attempts)
-VALUES ('export', :dedupe_key, CAST(:payload AS jsonb), :max_attempts)
-"""
+# The API role has no table access to jobs; this function inserts the one job
+# a QUEUED export needs (migration 0010).
+INSERT_JOB = "SELECT cc0_enqueue_export_job(:export_id, :max_attempts)"
 _COLUMNS = """
 id, board_id, status, failure_reason, included_count, excluded_count,
 created_at, completed_at, expires_at, (expires_at IS NOT NULL AND expires_at <= now()) AS expired

@@ -4,11 +4,11 @@ Revision ID: 0010_board_exports
 Revises: 0008_board_create_idempotency
 
 The API creates an export, its item snapshot, and its job row in one transaction,
-so a committed export always has a job to run. To allow that it gets a
-column-limited INSERT on `jobs`: no SELECT, UPDATE, or DELETE, and only the
-columns that describe new work. The worker reads and settles exports and never
-deletes. It still has no access to boards or board items, because the snapshot is
-taken when the export is requested.
+so a committed export always has a job to run. The API role has no privilege on
+`jobs`; it may only EXECUTE `cc0_enqueue_export_job`, a SECURITY DEFINER function
+that inserts the one job an existing QUEUED export needs. The worker reads and
+settles exports and never deletes. It still has no access to boards or board
+items, because the snapshot is taken when the export is requested.
 
 When the recommendation migration (0009) lands, point `down_revision` at it.
 """
@@ -95,12 +95,21 @@ def upgrade() -> None:
     items = quote_identifier(catalog.EXPORT_ITEMS_TABLE)
     op.execute(f"GRANT SELECT, INSERT ON {exports}, {items} TO {api}")
     op.execute(f"GRANT SELECT, UPDATE ON {exports}, {items} TO {worker}")
-    op.execute(f"GRANT INSERT (kind, dedupe_key, payload, max_attempts) ON jobs TO {api}")
+    op.execute("""
+        CREATE FUNCTION cc0_enqueue_export_job(p_export_id uuid, p_max_attempts integer)
+        RETURNS void LANGUAGE sql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+            INSERT INTO jobs (kind, dedupe_key, payload, max_attempts)
+            SELECT 'export', 'export:' || id::text,
+                   jsonb_build_object('export_id', id::text), p_max_attempts
+            FROM board_exports WHERE id = p_export_id AND status = 'QUEUED'
+        $$
+    """)
+    op.execute("REVOKE ALL ON FUNCTION cc0_enqueue_export_job(uuid, integer) FROM PUBLIC")
+    op.execute(f"GRANT EXECUTE ON FUNCTION cc0_enqueue_export_job(uuid, integer) TO {api}")
 
 
 def downgrade() -> None:
-    api = quote_identifier(roles.ROLE_API)
-    op.execute(f"REVOKE INSERT (kind, dedupe_key, payload, max_attempts) ON jobs FROM {api}")
+    op.execute("DROP FUNCTION cc0_enqueue_export_job(uuid, integer)")
     op.execute(f"DROP TABLE {catalog.EXPORT_ITEMS_TABLE}")
     op.execute(f"DROP TABLE {catalog.EXPORTS_TABLE}")
     op.execute(f"DELETE FROM jobs WHERE kind = {quote_literal(catalog.JOB_KIND_EXPORT)}")
