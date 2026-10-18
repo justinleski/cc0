@@ -23,6 +23,8 @@ type BoardContextValue = {
   toggleSave: (id: string, assetId: string) => Promise<boolean>;
   moveItem: (id: string, assetId: string, direction: -1 | 1) => Promise<boolean>;
   saveNotes: (id: string, assetId: string, notes: string) => Promise<boolean>;
+  /** The current bearer token, for features that call their own endpoints. */
+  getToken: () => string;
   clearError: () => void;
 };
 const BoardContext = createContext<BoardContextValue | null>(null);
@@ -197,6 +199,7 @@ export function BoardProvider({ children }: { children: ReactNode }) {
       return (await mutate(id, (token) => api.reorderPins(token, id, ids))).ok;
     },
     saveNotes: async (id, assetId, notes) => (await mutate(id, (token) => api.editPinNotes(token, id, assetId, notes))).ok,
+    getToken: () => tokenRef.current,
     clearError: () => setError(null),
   }}>{children}</BoardContext.Provider>;
 }
