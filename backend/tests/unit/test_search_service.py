@@ -360,3 +360,18 @@ def test_detail_and_related_preserve_missing_versus_empty_results(search_context
         embeddings.model_key,
         embeddings.model_version,
     )
+
+
+def test_related_reads_selected_stored_model_without_inference(search_context):
+    _, repository, embeddings, events = search_context
+    service = SearchService(
+        repository,
+        embeddings,
+        b"test-cursor-key",
+        related_model_key="ViT-B-32",
+        related_model_version="laion2b_s34b_b79k",
+    )
+    assert service.related(card(1).id, 12) is None
+    assert events == [
+        ("related", card(1).id, 12, "ViT-B-32", "laion2b_s34b_b79k")
+    ]

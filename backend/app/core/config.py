@@ -55,11 +55,13 @@ CONFIG_ENV_PREFIXES = (
     "READINESS_",
     "INGEST_",
     "EMBEDDING_",
+    "CATALOG_EMBEDDING_",
     "MODEL_",
     "POSTGRES_",
     "RUSTFS_",
     "S3_",
     "API_",
+    "RECOMMENDER_",
 )
 
 _DUMMY_SECRETS = frozenset(
@@ -125,6 +127,7 @@ class Settings(BaseSettings):
         self._validate_auth()
         self._reject_nonlocal_defaults()
         self._reject_embedding_width()
+        self._validate_catalog_embedding_identity()
 
     def _validate_auth(self) -> None:
         if self.auth_mode == "local":
@@ -178,6 +181,26 @@ class Settings(BaseSettings):
             )
         if not self.model_key.strip() or not self.model_version.strip():
             raise ValueError("MODEL_KEY and MODEL_VERSION are required")
+
+    def _validate_catalog_embedding_identity(self) -> None:
+        key = self.catalog_embedding_model_key
+        version = self.catalog_embedding_model_version
+        if (key is None) != (version is None):
+            raise ValueError(
+                "CATALOG_EMBEDDING_MODEL_KEY and CATALOG_EMBEDDING_MODEL_VERSION "
+                "must be set together"
+            )
+        if key is not None and (not key.strip() or not version or not version.strip()):
+            raise ValueError("Catalog embedding model identity cannot be empty")
+
+    def catalog_embedding_identity(
+        self, provider_key: str, provider_version: str
+    ) -> tuple[str, str]:
+        """Stored image vectors to read; defaults to the inference provider's identity."""
+        if self.catalog_embedding_model_key is None:
+            return provider_key, provider_version
+        assert self.catalog_embedding_model_version is not None
+        return self.catalog_embedding_model_key, self.catalog_embedding_model_version
 
     auth_mode: Literal["disabled", "local"] = "disabled"
     auth_local_signing_key: SecretStr = SecretStr("")
@@ -267,6 +290,15 @@ class Settings(BaseSettings):
     model_version: str = "unpinned"
     model_dimensions: int = 512
     embedding_cache_dir: str = "backend/.cache/embeddings"
+    # API-only selector for related images and board recommendations. These
+    # queries read persisted vectors and do not run image inference.
+    catalog_embedding_model_key: str | None = None
+    catalog_embedding_model_version: str | None = None
+
+    # Board recommendation strategies by mode. Names must be registered in
+    # app.recommendations.strategy.STRATEGIES; create_app rejects others.
+    recommender_cohesive_strategy: str = "centroid-cosine"
+    recommender_complement_strategy: str = "complement-baseline-v0"
 
     @property
     def fixture_dir(self) -> Path:

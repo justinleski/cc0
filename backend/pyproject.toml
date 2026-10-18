@@ -9,6 +9,8 @@ dependencies = [
     "fastapi==0.119.0",
     # Source requests in the ingestion worker, and the FastAPI test client.
     "httpx==0.28.1",
+    # Vector math for board recommendation ranking.
+    "numpy==2.5.4",
     # Bounded image decode and thumbnail generation.
     "pillow==12.0.0",
     "psycopg[binary]==3.2.10",

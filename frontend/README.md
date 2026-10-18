@@ -52,6 +52,19 @@ boards and service/authentication failures have visible states. Board deletion
 and pin removal ask for confirmation. The backend remains responsible for
 ownership and CC0 eligibility.
 
+Below the pins, **Suggestions for this board** shows recommendations from
+`/api/v1/boards/{id}/recommendations`. **More like this board** is the cohesive
+mode. **Complement (experimental)** is a placeholder control, not a finished
+complement algorithm. A board with no usable pins shows recent works instead.
+A note counts saved pins that did not shape the suggestions: pins that are no
+longer available, or that have no vector for the API's current embedding model
+(for example, Met assets embedded only with OpenCLIP while the API runs the
+default `fake` provider). The panel refetches when pins
+are added or removed, or when the mode changes; notes and reordering do not
+refetch. A newer request aborts the previous one, and a response describing an
+older board than the page holds is discarded and requested again. See
+[recommendations](../docs/systems/recommendations.md).
+
 `src/api/catalog.ts` owns catalog transport and presentation adaptation;
 `src/api/boards.ts` owns board transport and errors. The mounted board provider
 holds current-account data, discards stale responses after account switching,

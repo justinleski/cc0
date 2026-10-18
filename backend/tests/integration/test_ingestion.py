@@ -35,6 +35,7 @@ from app.ingestion.service import IngestService
 from app.integrations.object_store import ObjectStore, create_s3_client
 from app.worker.ingest import IngestWorker
 from app.worker.jobs import ClaimLost, JobStore, dedupe_key
+from app.worker.recovery import follow_ingest
 from tests.integration.conftest import BACKEND_ROOT, CatalogDatabase
 
 FIXTURE_ROOT = BACKEND_ROOT / "fixtures" / "met"
@@ -74,6 +75,18 @@ class FlakyFetcher:
         self.attempts += 1
         if self.attempts <= self._failures:
             raise TransientFailure("server_error", "503")
+        return self._inner.fetch(url, guard=guard)
+
+
+class RateLimitedOnce:
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.calls = 0
+
+    def fetch(self, url: str, *, guard: Any = None) -> FetchedImage:
+        self.calls += 1
+        if self.calls == 1:
+            raise TransientFailure("rate_limited", "429", retry_after=0.1)
         return self._inner.fetch(url, guard=guard)
 
 
@@ -393,6 +406,33 @@ def test_a_transient_failure_retries_and_still_stores_one_object(harness: Harnes
     assert harness.scalar("SELECT count(*) FROM assets") == 1
 
 
+def test_rate_limit_defers_met_queue_and_follow_resumes_it(harness: Harness) -> None:
+    limited = RateLimitedOnce(harness.source)
+    service = harness.worker_with(limited)
+    service.service.enqueue(["100001", "100002"])
+
+    first = service.drain(max_jobs=1)
+
+    assert [outcome.result for outcome in first] == [catalog.JOB_RETRY_WAIT]
+    assert limited.calls == 1
+    assert [harness.job(external_id).state for external_id in ("100001", "100002")] == [
+        catalog.JOB_RETRY_WAIT,
+        catalog.JOB_RETRY_WAIT,
+    ]
+    assert harness.job("100002").attempt_count == 0
+    assert harness.job_store.next_ingest_run_delay() is not None
+
+    resumed = follow_ingest(service, harness.job_store)
+
+    assert [outcome.result for outcome in resumed] == [ingest_module.STORED] * 2
+    assert limited.calls == 3
+    assert [harness.job(external_id).attempt_count for external_id in ("100001", "100002")] == [
+        2,
+        1,
+    ]
+    assert harness.job_store.next_ingest_run_delay() is None
+
+
 def test_exhausted_retries_dead_letter_and_keep_the_cc0_decision(harness: Harness) -> None:
     service = harness.worker_with(FlakyFetcher(harness.source, failures=99))
     service.service.enqueue(["100002"])
@@ -522,6 +562,7 @@ def test_a_killed_worker_resumes_after_its_lease_expires_without_a_second_downlo
     with pytest.raises(WorkerKilled):
         harness.worker.drain()
     assert harness.job("100006").state == catalog.JOB_LEASED
+    assert harness.job_store.next_ingest_run_delay() > 0
     assert len(harness.objects.puts) == 2
 
     # A live lease is not taken from a worker that may still be running.
@@ -529,7 +570,7 @@ def test_a_killed_worker_resumes_after_its_lease_expires_without_a_second_downlo
     assert harness.worker.drain() == []
 
     harness.expire_lease("100006")
-    outcomes = harness.worker.drain()
+    outcomes = follow_ingest(harness.worker, harness.job_store)
 
     assert [outcome.result for outcome in outcomes] == [ingest_module.RESUMED]
     assert len(harness.source.image_requests) == 1

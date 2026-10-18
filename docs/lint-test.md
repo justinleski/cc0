@@ -138,7 +138,8 @@ run means the stack really answered. They are the acceptance check through M2:
   and location filters hold, that a `STORED` asset is not in search, and that
   `cc0_api` can read `ready_assets` without reading `source_records`. The
   worker cannot `UPDATE` an embedding row. A newer rejection suppresses the
-  asset and removes it from search, detail, and related. Fake rows do not
+  asset and removes it from search, detail, and related. A rejection that ties
+  the verified row's `checked_at` hides an asset still marked READY. Fake rows do not
   satisfy an OpenCLIP `enqueue_missing`. An embed worker claims only its
   loaded checkpoint. A ranked cursor keeps its snapshot after the first hit is
   suppressed, and a cursor for another query or model is rejected.
@@ -165,3 +166,26 @@ docker compose stop
 M3 board tests (`test_auth.py`, `test_boards.py` in unit and integration) cover
 local token verification and environment guards, board CRUD and isolation,
 pinning and suppression, concurrency, rollback, and migration grants.
+
+M4 recommendation tests:
+
+- `test_recommendation_rank.py` (unit) checks centroid normalization and the
+  single-pin probe, the equal per-pin budget regardless of board position,
+  deterministic clustering (one style stays whole, two styles split), merge
+  deduplication with per-probe similarities, and each ranker's ordering and
+  tie-break. `test_recommendation_metrics.py` covers hit/MRR/nDCG, interest
+  coverage, the list diagnostics, and the per-pin relevance/novelty collapse
+  (correlation of -1).
+- `test_recommendations.py` (integration) runs the endpoint against fake vectors.
+  It checks browse fallback for an empty board, single-pin equality with
+  `/assets/{id}/related`, that adding and removing pins changes results without
+  repeating saved pins, `board_version` changes, determinism, owner-only 404s,
+  ignored pins that are suppressed, restored, or unembedded, a suppressed
+  candidate never appearing, and tied rejections (still READY) hiding both a
+  pin and a candidate in both modes.
+- `tests/board-recommendations.test.tsx` (frontend) checks that a late response
+  for older pins is discarded, a response describing an older board triggers a
+  refetch, note-only changes do not refetch, and mode changes do.
+
+The evaluation and latency commands need the local stack and are not part of
+`./scripts/check.sh`; see [evaluation](evaluation.md).

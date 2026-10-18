@@ -469,6 +469,65 @@ class JobStore:
             {"state": catalog.JOB_RETRY_WAIT, "delay": delay_seconds, "reason": reason},
         )
 
+    def defer_provider(self, provider: str, delay_seconds: float) -> int:
+        """Pause unclaimed ingest work after a provider-wide 429.
+
+        Keep later retry deadlines intact; a rate limit must never shorten an
+        existing backoff. Leased work belongs to its claim holder.
+        """
+        with self._engine.begin() as connection:
+            result = connection.execute(
+                text(
+                    """
+                    UPDATE jobs SET
+                        state = :retry_wait,
+                        next_run_at = GREATEST(
+                            COALESCE(next_run_at, now()),
+                            now() + make_interval(secs => :delay)
+                        ),
+                        updated_at = now()
+                    WHERE kind = :kind
+                      AND payload->>'provider' = :provider
+                      AND state IN (:pending, :retry_wait)
+                    """
+                ),
+                {
+                    "kind": catalog.JOB_KIND_INGEST,
+                    "provider": provider,
+                    "delay": delay_seconds,
+                    "pending": catalog.JOB_PENDING,
+                    "retry_wait": catalog.JOB_RETRY_WAIT,
+                },
+            )
+        return result.rowcount
+
+    def next_ingest_run_delay(self) -> float | None:
+        """Seconds until ingest work is due or a live lease can be reclaimed."""
+        with self._engine.begin() as connection:
+            delay = connection.execute(
+                text(
+                    """
+                    SELECT EXTRACT(EPOCH FROM MIN(
+                        CASE
+                            WHEN state = :pending THEN now()
+                            WHEN state = :retry_wait THEN COALESCE(next_run_at, now())
+                            ELSE COALESCE(leased_until, now())
+                        END
+                    ) - now())
+                    FROM jobs
+                    WHERE kind = :kind
+                      AND state IN (:pending, :retry_wait, :leased)
+                    """
+                ),
+                {
+                    "kind": catalog.JOB_KIND_INGEST,
+                    "pending": catalog.JOB_PENDING,
+                    "retry_wait": catalog.JOB_RETRY_WAIT,
+                    "leased": catalog.JOB_LEASED,
+                },
+            ).scalar_one()
+        return None if delay is None else max(float(delay), 0.0)
+
     def mark_dead(self, job: ClaimedJob, reason: str) -> bool:
         """Terminal. Nothing retries this row until an operator redrives it."""
         return self._fenced(

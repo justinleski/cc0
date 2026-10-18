@@ -1,0 +1,33 @@
+{
+  "baseline_at": "2026-10-18T17:15:13.137759+00:00",
+  "catalog_size": 160,
+  "category_counts": {
+    "animals": 17,
+    "architecture_interiors": 19,
+    "landscapes_seascapes": 28,
+    "patterns_designs": 17,
+    "portraits_figures": 25,
+    "sculpture_objects": 20,
+    "still_lifes_botanicals": 17,
+    "textiles_garments": 17
+  },
+  "model_key": "ViT-B-32",
+  "model_version": "laion2b_s34b_b79k",
+  "object_bytes": {
+    "originals": 355662793,
+    "thumbnails": 4732406,
+    "total": 360395199
+  },
+  "outcomes": {
+    "failed": 2,
+    "newly_embedded": 113,
+    "newly_stored": 113,
+    "rejected": 94,
+    "reused_embedding": 47,
+    "skipped_reused_ready": 47,
+    "successful": 160,
+    "unattempted_or_pending": 464
+  },
+  "target": 160,
+  "verified_at": "2026-10-18T17:23:39.918295+00:00"
+}

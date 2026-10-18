@@ -62,6 +62,23 @@ def test_database_url_typo_is_still_rejected(monkeypatch):
         Settings(_env_file=None)
 
 
+def test_catalog_vector_identity_is_independent_of_inference_provider():
+    settings = Settings(
+        _env_file=None,
+        embedding_provider="fake",
+        catalog_embedding_model_key="ViT-B-32",
+        catalog_embedding_model_version="laion2b_s34b_b79k",
+    )
+    assert settings.catalog_embedding_identity("fake", "deterministic-v1") == (
+        "ViT-B-32", "laion2b_s34b_b79k"
+    )
+    assert Settings(_env_file=None).catalog_embedding_identity("fake", "deterministic-v1") == (
+        "fake", "deterministic-v1"
+    )
+    with pytest.raises(ValueError, match="must be set together"):
+        Settings(_env_file=None, catalog_embedding_model_key="ViT-B-32")
+
+
 def test_nonlocal_defaults_are_rejected():
     with pytest.raises(ValueError, match="dummy credentials"):
         Settings(_env_file=None, app_env="production")

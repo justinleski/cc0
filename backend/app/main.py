@@ -11,6 +11,8 @@ from app.db.engine import create_api_engine
 from app.embeddings.provider import build_provider
 from app.exports.router import router as exports_router
 from app.integrations.object_store import create_s3_client
+from app.recommendations.router import router as recommendations_router
+from app.recommendations.strategy import configured as strategy
 from app.search.router import router as search_router
 
 
@@ -18,6 +20,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging()
     configured = settings or get_settings()
     cursor_key = configured.cursor_key()
+    # Fail at startup, not on the first board request, for an unknown strategy.
+    for name in (
+        configured.recommender_cohesive_strategy,
+        configured.recommender_complement_strategy,
+    ):
+        strategy(name)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -56,6 +64,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(search_router)
     app.include_router(boards_router)
     app.include_router(exports_router)
+    app.include_router(recommendations_router)
     return app
 
 

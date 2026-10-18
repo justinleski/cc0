@@ -1,8 +1,10 @@
 # Local development
 
-`docker compose up --build -d` builds and starts the local data services, runs
-migrations once, then starts the API and frontend. The host workflow remains
-available for hot reload and debugging. See the [root quick start](../README.md)
+`./scripts/start.sh` builds and starts the local data services, runs migrations
+once, then starts the API and frontend. It prints the local app, Swagger docs,
+readiness, and RustFS console URLs plus common Compose commands. The host
+workflow remains available for hot reload and debugging. See the
+[root quick start](../README.md)
 for both workflows, [lint and tests](lint-test.md) for `./scripts/check.sh`, and
 [ingestion](systems/ingestion.md) for worker commands and `INGEST_*` settings.
 

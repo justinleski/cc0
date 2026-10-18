@@ -14,15 +14,14 @@ Only tick an item once it is implemented **and** verified. See
 | `feat/m4-acceptance-evaluation` | `m4-acceptance-evaluation` | Phase 3/4: tests, E2E, docs |
 | `milestone/m5` | `milestone-m5` | M5 integration (no work until requested) |
 | `feat/m5-aws-infra`, `feat/m5-auth-cognito`, `feat/m5-ops-observability` | `m5-*` | M5 placeholders, empty |
-| `feat/recommendation-algo` | repo root | Recommendation engine, owned separately; do not modify |
+| `feat/recommendation-algo` | repo root | Recommendation engine, owned separately; merged into `milestone/m4` |
 
 ## Dependencies
 
-- Migration `0010_board_exports` currently revises `0008`; when the recommendation
-  migration `0009` lands, repoint `down_revision` and rerun `tests/integration/test_migration.py`.
-
-- Recommendation engine (`feat/recommendation-algo`) is uncommitted at the time of
-  writing. Frontend integration and recommendation acceptance tests wait for it to land.
+- Resolved: `0010_board_exports` revises `0009_ready_assets_fail_closed`; `alembic heads`
+  shows one head (`0010_board_exports`).
+- Resolved: `feat/recommendation-algo` (rights fix 0009, recommendation engine, worker
+  `--follow`, stored embedding identity, Met 1K evaluation catalog) is merged.
 
 ## Phase 1 — Exports
 - [x] Schema + grants migration
@@ -32,8 +31,8 @@ Only tick an item once it is implemented **and** verified. See
 - [x] Lifecycle (expiry, cleanup) documented
 
 ## Phase 2 — Frontend
-- [ ] Both recommendation modes on board page (built on `feat/recommendation-algo`, not mine; pending merge)
-- [ ] Loading / empty / error / retry; stale-response guard (recommendations: pending merge; export: done, component tests)
+- [x] Both recommendation modes on board page (from `feat/recommendation-algo`; rendered beside the export action)
+- [x] Loading / empty / error / retry; stale-response guard (recommendations and export: component tests)
 - [x] Export action, progress, download, failure retry
 
 ## Phase 3 — Acceptance
@@ -66,3 +65,12 @@ this branch's `exports`, `exports-cleanup`, and export drain to `drain`. Repoint
 - Frontend (Node 22): `tsc --noEmit`, `eslint .`, 39 vitest tests.
 - `backend/scripts/m4_e2e.py`: 15 checks passed against real Postgres, RustFS, API and worker processes.
 - Not done: real-browser (Playwright) run of the export UI; compose worker service (the worker is run by hand).
+
+## Verification log (merge of `feat/recommendation-algo` into `milestone/m4`, 2026-10-18)
+
+- `alembic heads`: one head, `0010_board_exports` (revises `0009_ready_assets_fail_closed`).
+- Backend: `ruff check` clean; 261 unit tests; 71 integration tests, none skipped (includes
+  `test_exports.py`, `test_m4_e2e.py`, `test_recommendations.py`, migration upgrade/downgrade).
+- Frontend (Node 22): typecheck, lint, 39 vitest tests, production build.
+- Not done: live `backend/scripts/m4_e2e.py` run (the local operator database was left at 0009);
+  real-browser run of the combined board page; regenerating `evaluation.md` numbers.

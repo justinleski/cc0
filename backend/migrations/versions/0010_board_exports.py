@@ -1,7 +1,7 @@
 """Board exports: owner-scoped requests, a pinned item snapshot, and the export job kind.
 
 Revision ID: 0010_board_exports
-Revises: 0008_board_create_idempotency
+Revises: 0009_ready_assets_fail_closed
 
 The API creates an export, its item snapshot, and its job row in one transaction,
 so a committed export always has a job to run. The API role has no privilege on
@@ -9,8 +9,6 @@ so a committed export always has a job to run. The API role has no privilege on
 that inserts the one job an existing QUEUED export needs. The worker reads and
 settles exports and never deletes. It still has no access to boards or board
 items, because the snapshot is taken when the export is requested.
-
-When the recommendation migration (0009) lands, point `down_revision` at it.
 """
 
 from alembic import op
@@ -19,7 +17,7 @@ from app.db import catalog, roles
 from app.db.roles import quote_identifier, quote_literal
 
 revision = "0010_board_exports"
-down_revision = "0008_board_create_idempotency"
+down_revision = "0009_ready_assets_fail_closed"
 branch_labels = None
 depends_on = None
 
