@@ -3,10 +3,70 @@
 `./scripts/start.sh` builds and starts the local data services, runs migrations
 once, then starts the API and frontend. It prints the local app, Swagger docs,
 readiness, and RustFS console URLs plus common Compose commands. The host
-workflow remains available for hot reload and debugging. See the
-[root quick start](../README.md)
-for both workflows, [lint and tests](lint-test.md) for `./scripts/check.sh`, and
+workflow below remains available for hot reload and debugging. See the
+[root quick start](../README.md) for the container path,
+[lint and tests](lint-test.md) for `./scripts/check.sh`, and
 [ingestion](systems/ingestion.md) for worker commands and `INGEST_*` settings.
+
+## Container stack
+
+Provision a private cursor key once, then start Compose:
+
+```bash
+cp -n .env.example .env
+grep -q '^CURSOR_SIGNING_KEY=' .env || printf 'CURSOR_SIGNING_KEY=%s\n' "$(openssl rand -hex 32)" >> .env
+./scripts/start.sh
+```
+
+Keep the generated key private and stable across API restarts. Worker and token
+commands run with the same backend image:
+
+```bash
+docker compose run --rm --no-deps api python -m app.worker ingest
+docker compose run --rm --no-deps api python -m app.worker jobs --state dead
+docker compose run --rm --no-deps api python -m app.auth token alice
+```
+
+The fixture ingest intentionally exits 1 after storing 10 eligible assets and
+dead-lettering 3 refused fixtures. `docker compose stop` preserves data.
+
+## Host processes with hot reload
+
+Requires Docker Compose, Python 3.12+, and Node 22. Stop the containerized API
+and frontend before starting host processes on the same ports.
+
+```bash
+cp -n .env.example .env
+grep -q '^CURSOR_SIGNING_KEY=' .env || printf 'CURSOR_SIGNING_KEY=%s\n' "$(openssl rand -hex 32)" >> .env
+python3 -m venv backend/.venv
+backend/.venv/bin/pip install -e "backend[dev]"
+(cd frontend && npm ci)
+docker compose up -d --wait postgres rustfs
+docker compose run --rm rustfs-init
+backend/.venv/bin/alembic -c backend/alembic.ini upgrade head
+backend/.venv/bin/uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
+```
+
+In another terminal:
+
+```bash
+(cd frontend && npm run dev)
+curl -sS http://127.0.0.1:8000/api/v1/health
+curl -sS http://127.0.0.1:8000/api/v1/ready
+```
+
+Ingest the recorded Met fixtures (no network access needed):
+
+```bash
+(cd backend && .venv/bin/python -m app.worker ingest)
+(cd backend && .venv/bin/python -m app.worker jobs --state dead)
+# For existing STORED assets without embedding jobs:
+(cd backend && .venv/bin/python -m app.worker reembed)
+```
+
+The first run exits 1 by design (see above). Open http://127.0.0.1:3000. For
+local board sign-in see [private boards](systems/boards.md) and the
+[frontend walkthrough](../frontend/README.md).
 
 ## Configuration
 

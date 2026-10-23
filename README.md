@@ -1,14 +1,62 @@
 # cc0
 
-Local-first CC0 visual boards: discover verified CC0 images and collect them into visual
-boards. M0–M3 are implemented: Postgres with pgvector,
-RustFS, ingestion with CC0 rights evidence, hybrid search, and a frontend with
-filters, provenance, related images, and visibility-gated media. Opt-in local
-authentication protects persistent private boards in the API and frontend.
+[![check](https://github.com/justinleski/cc0/actions/workflows/check.yml/badge.svg)](https://github.com/justinleski/cc0/actions/workflows/check.yml)
 
-## Start locally
+Discover verified CC0 artwork and collect it into private visual boards, with
+recommendations that follow the aesthetic of the whole board. Runs fully locally.
 
-For the complete container stack, provision a private cursor key once, then start Compose:
+<!-- TODO: add a screenshot of the catalog and a board here -->
+
+## What it does
+
+- **Hybrid search:** natural-language queries ("misty blue coastal paintings") fused with exact
+  metadata filters (creator, location, year).
+- **Private boards:** pin, organize, and sign in locally to keep boards private.
+- **Board-aware recommendations:** "more like this board" computed from the images pinned to it.
+- **Provenance you can audit:** every image carries its source URL and the rights evidence that
+  admitted it. Anything not explicitly CC0 is never downloaded.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  Met["The Met Open Access"] --> Worker
+  subgraph Backend["Python backend (one codebase, two processes)"]
+    Worker["Worker: rights gate, fetch gate, embed job"]
+    API["FastAPI: search, boards, recommendations"]
+  end
+  Worker --> PG[("PostgreSQL + pgvector<br/>catalog, rights evidence, vectors")]
+  Worker --> S3[("RustFS<br/>S3-compatible images")]
+  API --> PG
+  API --> S3
+  Web["Next.js frontend"] --> API
+```
+
+It is a feature-layered modular monolith. Postgres with pgvector is the single store for
+relational data, text search, and vectors ([ADR-0002](docs/decisions/0002-postgres-pgvector.md)).
+Image bytes live in S3-compatible object storage ([ADR-0001](docs/decisions/0001-object-storage.md)).
+The API and worker use separate least-privilege database logins
+([ADR-0003](docs/decisions/0003-database-roles.md)), and code is organized by feature rather than
+by technical layer ([ADR-0005](docs/decisions/0005-feature-based-layered-architecture.md)).
+
+## Engineering highlights
+
+- **Rights-first ingestion:** image bytes are fetched only after CC0 evidence is recorded; refused
+  records are kept as a metadata-only negative cache. → [ingestion](docs/systems/ingestion.md)
+- **Hybrid ranking:** lexical and vector results fused with reciprocal rank fusion, with
+  quoted-phrase handling. → [search](docs/systems/search.md)
+- **Stateless recommendations:** a board's profile is recomputed from its pins on every request,
+  so there is no cache to invalidate. → [recommendations](docs/systems/recommendations.md)
+- **Private boards:** signed local tokens and owner-scoped routes. → [boards](docs/systems/boards.md)
+- **Measured, not guessed:** a versioned 1,000-image evaluation catalog for benchmarking
+  retrieval. → [evaluation](docs/evaluation.md), [Met catalog](docs/met-evaluation-catalog.md)
+
+**Stack:** Python 3.12, FastAPI, PostgreSQL + pgvector, OpenCLIP (optional; a deterministic fake
+is the default), RustFS, Next.js, TypeScript, Docker Compose.
+
+## Quickstart
+
+Requires Docker Compose and `openssl`.
 
 ```bash
 cp -n .env.example .env
@@ -16,70 +64,29 @@ grep -q '^CURSOR_SIGNING_KEY=' .env || printf 'CURSOR_SIGNING_KEY=%s\n' "$(opens
 ./scripts/start.sh
 ```
 
-This builds the API and Next.js images, starts PostgreSQL and RustFS, creates the
-local bucket, applies migrations, and starts the API and frontend in that order.
-The script prints the app, Swagger API docs, readiness endpoint, RustFS console,
-and useful Compose commands after startup. Open http://127.0.0.1:3000; API
-readiness is at http://127.0.0.1:8000/api/v1/ready. Copy
-`.env.example` to `.env` and edit it to enable local authentication or change
-local settings. Keep the generated key private and stable across API restarts.
-To run worker or token commands with the same backend image:
+Open http://127.0.0.1:3000. Swagger docs are at http://127.0.0.1:8000/docs and readiness at
+http://127.0.0.1:8000/api/v1/ready. Load the recorded Met fixtures (no network needed):
 
 ```bash
 docker compose run --rm --no-deps api python -m app.worker ingest
-docker compose run --rm --no-deps api python -m app.worker jobs --state dead
-docker compose run --rm --no-deps api python -m app.auth token alice
 ```
 
-The fixture ingest intentionally exits 1 after storing 10 eligible assets and
-dead-lettering 3 refused fixtures. Run `docker compose stop` to preserve data.
+This exits 1 by design: it stores 10 eligible assets and dead-letters 3 refused fixtures.
+`docker compose stop` preserves data. For hot reload, host processes, and configuration, see
+[local development](docs/local-development.md). Run `./scripts/check.sh` for the full acceptance
+check ([test commands](docs/lint-test.md)).
 
-### Host processes with hot reload
+## Documentation
 
-This workflow requires Docker Compose, Python 3.12+, and Node 22. Stop the
-containerized API and frontend before starting host processes on the same ports.
+| | |
+|---|---|
+| [Documentation index](docs/README.md) | Every system doc and ADR |
+| [MVP spec](docs/mvp-spec.md) | Scope, data model, milestones |
+| [Local development](docs/local-development.md) | Compose, host workflow, configuration |
+| [Frontend walkthrough](frontend/README.md) | Catalog, boards, sign-in |
 
-```bash
-cp -n .env.example .env
-grep -q '^CURSOR_SIGNING_KEY=' .env || printf 'CURSOR_SIGNING_KEY=%s\n' "$(openssl rand -hex 32)" >> .env
-python3 -m venv backend/.venv
-backend/.venv/bin/pip install -e "backend[dev]"
-(cd frontend && npm ci)
-docker compose up -d --wait postgres rustfs
-docker compose run --rm rustfs-init
-backend/.venv/bin/alembic -c backend/alembic.ini upgrade head
-backend/.venv/bin/uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
-```
+## Status
 
-`cp -n` leaves an existing `.env` alone.
-
-In another terminal:
-
-```bash
-(cd frontend && npm run dev)
-curl -sS http://127.0.0.1:8000/api/v1/health
-curl -sS http://127.0.0.1:8000/api/v1/ready
-```
-
-Ingest the recorded Met fixtures (no network access needed):
-
-```bash
-(cd backend && .venv/bin/python -m app.worker ingest)
-(cd backend && .venv/bin/python -m app.worker jobs --state dead)
-# For existing STORED assets without embedding jobs:
-(cd backend && .venv/bin/python -m app.worker reembed)
-```
-
-The first run stores 10 assets and dead-letters 3 refused fixtures by design, so
-it exits 1. See [ingestion](docs/systems/ingestion.md).
-
-Open http://127.0.0.1:3000. Run `./scripts/check.sh` for the full acceptance check.
-Use `docker compose stop` to stop services and preserve data.
-
-For local board sign-in and token commands, see [private boards](docs/systems/boards.md)
-and the [frontend walkthrough](frontend/README.md).
-
-See the [documentation index](docs/README.md), [local development guide](docs/local-development.md),
-[test commands](docs/lint-test.md), and [MVP spec](docs/mvp-spec.md).
-The [Met evaluation catalog](docs/met-evaluation-catalog.md) documents the
-versioned 1,000-image dataset and its local reproduction commands.
+Milestones M0–M3 are done (infrastructure, ingestion with rights evidence, hybrid search, frontend
+with private boards), and the M4 recommendation baseline is in place. Board export and
+complement ranking are next ([why complement is hard](docs/systems/recommendations.md#complement-is-an-open-problem)).
