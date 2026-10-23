@@ -1,9 +1,8 @@
-# cc0
+# OpenCanvas
 
 [![check](https://github.com/justinleski/cc0/actions/workflows/check.yml/badge.svg)](https://github.com/justinleski/cc0/actions/workflows/check.yml)
 
-Discover verified CC0 artwork and collect it into private visual boards, with
-recommendations that follow the aesthetic of the whole board. Runs fully locally.
+A platform to browse and discover works that are copyright free and and can be modified (CC0) to be used on social media, websites, and videos. Runs locally, next steps are to to deploy to the cloud.
 
 <!-- TODO: add a screenshot of the catalog and a board here -->
 
@@ -13,14 +12,13 @@ recommendations that follow the aesthetic of the whole board. Runs fully locally
   metadata filters (creator, location, year).
 - **Private boards:** pin, organize, and sign in locally to keep boards private.
 - **Board-aware recommendations:** "more like this board" computed from the images pinned to it.
-- **Provenance you can audit:** every image carries its source URL and the rights evidence that
-  admitted it. Anything not explicitly CC0 is never downloaded.
+- **Auditable provenance:** i.e. every image carries its source URL and the rights evidence that got it in this collection. Anything not explicitly CC0 is never downloaded.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  Met["The Met Open Access"] --> Worker
+  Sources["Open-access collections<br/>(museums, archives)"] --> Worker
   subgraph Backend["Python backend (one codebase, two processes)"]
     Worker["Worker: rights gate, fetch gate, embed job"]
     API["FastAPI: search, boards, recommendations"]
@@ -32,24 +30,23 @@ flowchart LR
   Web["Next.js frontend"] --> API
 ```
 
-It is a feature-layered modular monolith. Postgres with pgvector is the single store for
-relational data, text search, and vectors ([ADR-0002](docs/decisions/0002-postgres-pgvector.md)).
-Image bytes live in S3-compatible object storage ([ADR-0001](docs/decisions/0001-object-storage.md)).
-The API and worker use separate least-privilege database logins
-([ADR-0003](docs/decisions/0003-database-roles.md)), and code is organized by feature rather than
-by technical layer ([ADR-0005](docs/decisions/0005-feature-based-layered-architecture.md)).
+It is a feature-layered modular monolith. Postgres with pgvector is the
+[single store for relational data, text search, and vectors](docs/decisions/0002-postgres-pgvector.md),
+and image bytes live in [S3-compatible object storage](docs/decisions/0001-object-storage.md).
+The API and worker use [separate least-privilege database logins](docs/decisions/0003-database-roles.md),
+and code is [organized by feature rather than by technical layer](docs/decisions/0005-feature-based-layered-architecture.md).
 
-## Engineering highlights
+## Key design choices
 
-- **Rights-first ingestion:** image bytes are fetched only after CC0 evidence is recorded; refused
-  records are kept as a metadata-only negative cache. → [ingestion](docs/systems/ingestion.md)
+- **Rights-first ingestion:** image bytes are fetched only after CC0 evidence is recorded, and
+  refused records are kept as a metadata-only negative cache. See [ingestion](docs/systems/ingestion.md).
 - **Hybrid ranking:** lexical and vector results fused with reciprocal rank fusion, with
-  quoted-phrase handling. → [search](docs/systems/search.md)
+  quoted-phrase handling. See [search](docs/systems/search.md).
 - **Stateless recommendations:** a board's profile is recomputed from its pins on every request,
-  so there is no cache to invalidate. → [recommendations](docs/systems/recommendations.md)
-- **Private boards:** signed local tokens and owner-scoped routes. → [boards](docs/systems/boards.md)
+  so there is no cache to invalidate. See [recommendations](docs/systems/recommendations.md).
+- **Private boards:** signed local tokens and owner-scoped routes. See [boards](docs/systems/boards.md).
 - **Measured, not guessed:** a versioned 1,000-image evaluation catalog for benchmarking
-  retrieval. → [evaluation](docs/evaluation.md), [Met catalog](docs/met-evaluation-catalog.md)
+  retrieval. See [evaluation](docs/evaluation.md) and the [Met catalog](docs/met-evaluation-catalog.md).
 
 **Stack:** Python 3.12, FastAPI, PostgreSQL + pgvector, OpenCLIP (optional; a deterministic fake
 is the default), RustFS, Next.js, TypeScript, Docker Compose.
